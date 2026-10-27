@@ -39,17 +39,24 @@ pub enum Address {
 impl Address {
     fn index(self, i: i64, size: u32) -> usize {
         let n = i64::from(size.max(1));
-        match self {
-            Address::Wrap => i.rem_euclid(n) as usize,
-            Address::Clamp => i.clamp(0, n - 1) as usize,
+        let (last, period) = (n.saturating_sub(1), n.saturating_mul(2));
+        let at = match self {
+            Address::Wrap => i.rem_euclid(n),
+            Address::Clamp => i.clamp(0, last),
             // texel -1 is texel 0 mirrored, -2 is 1, ...: the pattern 0 1 .. n-1 n-1 .. 0 repeats every 2n texels
             Address::Mirror => {
-                let m = i.rem_euclid(2 * n);
-                (if m < n { m } else { 2 * n - 1 - m }) as usize
+                let m = i.rem_euclid(period);
+                if m < n {
+                    m
+                } else {
+                    period.saturating_sub(1).saturating_sub(m)
+                }
             }
             // mirrored once about the origin (-1 reads 0, -2 reads 1, ...), then the edge texel
-            Address::MirrorOnce => (if i < 0 { -1 - i } else { i }).clamp(0, n - 1) as usize,
-        }
+            Address::MirrorOnce => (if i < 0 { (-1i64).saturating_sub(i) } else { i }).clamp(0, last),
+        };
+        // every arm lands in 0..n, and n is a u32
+        usize::try_from(at).unwrap_or_default()
     }
 }
 
@@ -169,7 +176,7 @@ impl Levels {
         let (x, y) = texel_coordinate([uv[0] * f64::from(w) - 0.5, uv[1] * f64::from(h) - 0.5])?;
         let (fx, fy) = (x.floor(), y.floor());
         let (tx, ty) = (x - fx, y - fy);
-        let (ix, iy) = (fx as i64, fy as i64);
+        let (ix, iy) = (floor_f64(fx), floor_f64(fy));
         let mut out = [0.0; 4];
         for (dx, dy, wt) in [
             (0, 0, (1.0 - tx) * (1.0 - ty)),
@@ -177,7 +184,7 @@ impl Levels {
             (0, 1, (1.0 - tx) * ty),
             (1, 1, tx * ty),
         ] {
-            let t = level.texel(ix + dx, iy + dy, address)?;
+            let t = level.texel(ix.saturating_add(dx), iy.saturating_add(dy), address)?;
             for (c, (o, byte)) in out.iter_mut().zip(t).enumerate() {
                 *o += wt * transfer.channel(c, byte);
             }
@@ -197,7 +204,7 @@ impl Levels {
         let (w, h) = self.size(level);
         let level = self.level(level)?;
         let (x, y) = texel_coordinate([uv[0] * f64::from(w), uv[1] * f64::from(h)])?;
-        let t = level.texel(x.floor() as i64, y.floor() as i64, address)?;
+        let t = level.texel(floor_f64(x), floor_f64(y), address)?;
         Ok(std::array::from_fn(|c| {
             transfer.channel(c, t.get(c).copied().unwrap_or_default())
         }))
@@ -213,15 +220,19 @@ impl Levels {
             .0
             .iter()
             .map(|p| {
-                std::array::from_fn(|c| match transfer {
-                    Transfer::SrgbColour if c < 3 => srgb8_to_linear(p[c]) as f32,
-                    _ => p[c] as f32 / 255.0,
-                })
+                let mut texel = [0f32; 4];
+                for (c, (out, &byte)) in texel.iter_mut().zip(p).enumerate() {
+                    *out = match transfer {
+                        Transfer::SrgbColour if c < 3 => to_f32(srgb8_to_linear(byte)),
+                        _ => f32::from(byte) / 255.0,
+                    };
+                }
+                texel
             })
             .collect();
         Ok(Decoded {
-            width: l.width as usize,
-            height: l.height as usize,
+            width: l.width,
+            height: l.height,
             depth: 1,
             texels,
         })
@@ -239,14 +250,14 @@ struct Level<'a> {
 impl Level<'_> {
     fn texel(&self, x: i64, y: i64, address: [Address; 2]) -> Result<[u8; 4]> {
         let (x, y) = (address[0].index(x, self.width), address[1].index(y, self.height));
-        let i = y * self.row_bytes + x * 4;
-        self.bytes
-            .get(i..)
-            .and_then(|rest| rest.first_chunk::<4>())
+        let i = y
+            .checked_mul(self.row_bytes)
+            .and_then(|row| row.checked_add(x.checked_mul(4)?));
+        i.and_then(|i| self.bytes.get(i..)?.first_chunk::<4>())
             .copied()
             .ok_or_else(|| {
                 Error::Invalid(format!(
-                    "sampled texture: texel ({x}, {y}) at byte {i}, expected within the level's {} bytes",
+                    "sampled texture: texel ({x}, {y}) outside the level's {} bytes",
                     self.bytes.len()
                 ))
             })
@@ -290,13 +301,17 @@ impl Levels {
         let last = self.levels.len().saturating_sub(1);
         let lod = lod.clamp(0.0, last as f64);
         let below = lod.floor();
-        let (l0, f) = (below as usize, lod - below);
+        let (l0, f) = (level_number(below), lod - below);
         let a = self.bilinear(l0, uv, address, transfer)?;
         if f == 0.0 {
             return Ok(a);
         }
-        let b = self.bilinear((l0 + 1).min(last), uv, address, transfer)?;
-        Ok(std::array::from_fn(|c| a[c] + (b[c] - a[c]) * f))
+        let b = self.bilinear(l0.saturating_add(1).min(last), uv, address, transfer)?;
+        let mut mixed = [0.0; 4];
+        for (m, (a, b)) in mixed.iter_mut().zip(a.into_iter().zip(b)) {
+            *m = a + (b - a) * f;
+        }
+        Ok(mixed)
     }
 
     /// The stored level nearest the level of detail `lod`, as a point mip filter picks it: `floor(lod + 0.5)` (a half
@@ -308,7 +323,7 @@ impl Levels {
             ));
         }
         let last = self.levels.len().saturating_sub(1);
-        Ok((lod + 0.5).floor().clamp(0.0, last as f64) as usize)
+        Ok(level_number((lod + 0.5).floor().clamp(0.0, last as f64)))
     }
 }
 
@@ -339,9 +354,9 @@ impl Subtexel {
 /// slice.
 #[derive(Clone, Debug)]
 pub struct Decoded {
-    width: usize,
-    height: usize,
-    depth: usize,
+    width: u32,
+    height: u32,
+    depth: u32,
     texels: Vec<[f32; 4]>,
 }
 
@@ -377,39 +392,58 @@ impl Decoded {
             )));
         }
         Ok(Decoded {
-            width: width as usize,
-            height: height as usize,
-            depth: depth as usize,
+            width,
+            height,
+            depth,
             texels,
         })
     }
 
     /// The level's `[width, height]` in texels.
     pub fn dimensions(&self) -> [usize; 2] {
-        [self.width, self.height]
+        [self.width as usize, self.height as usize]
     }
     /// The slices of a volume: 1 for a 2D level.
     pub fn depth(&self) -> usize {
-        self.depth
+        self.depth as usize
     }
     /// The memory the decoded texels take, in bytes (16 a texel).
     pub fn decoded_bytes(&self) -> usize {
-        self.texels.len() * 16
+        self.texels.len().saturating_mul(16)
+    }
+
+    /// The texel at (x, y, z) if the level holds one there.
+    fn get(&self, x: usize, y: usize, z: usize) -> Option<[f32; 4]> {
+        let index = z
+            .checked_mul(self.height as usize)?
+            .checked_add(y)?
+            .checked_mul(self.width as usize)?
+            .checked_add(x)?;
+        self.texels.get(index).copied()
     }
 
     /// The texel at (x, y, z), if the level holds one there: no addressing, a load's view of the level.
     pub fn texel(&self, x: i64, y: i64, z: i64) -> Option<[f32; 4]> {
-        let inside = |i: i64, n: usize| usize::try_from(i).ok().filter(|&i| i < n);
-        let (x, y, z) = (
+        let inside = |i: i64, n: u32| usize::try_from(i).ok().filter(|&i| i < n as usize);
+        self.get(
             inside(x, self.width)?,
             inside(y, self.height)?,
             inside(z, self.depth)?,
-        );
-        Some(self.texels[(z * self.height + y) * self.width + x])
+        )
     }
 
-    fn at(&self, x: usize, y: usize, z: usize) -> [f32; 4] {
-        self.texels[(z * self.height + y) * self.width + x]
+    /// The texel at addressed (x, y, z): addressing reduces each into the level, so a miss means the texels do not
+    /// match the size, which the constructors rule out.
+    fn at(&self, x: usize, y: usize, z: usize) -> Result<[f32; 4]> {
+        self.get(x, y, z).ok_or_else(|| {
+            Error::Invalid(format!(
+                "sampled texture: texel ({x}, {y}, {z}) outside the {} texels of a {} x {} x {} level",
+                self.texels.len(),
+                self.width,
+                self.height,
+                self.depth
+            ))
+        })
     }
 
     /// A 2D sample of a volume is refused: which slice it reads is not the level's to say.
@@ -432,18 +466,21 @@ impl Decoded {
     /// [`Decoded::bilinear`] with the texel coordinate resolved to `subtexel` precision before the weights are taken.
     pub fn bilinear_at(&self, uv: [f32; 2], address: [Address; 2], subtexel: Subtexel) -> Result<[f32; 4]> {
         self.plane()?;
-        let x = texel_coordinate_f32(subtexel.resolve(uv[0] * self.width as f32 - 0.5))?;
-        let y = texel_coordinate_f32(subtexel.resolve(uv[1] * self.height as f32 - 0.5))?;
-        let (ix, iy) = (x.floor() as i64, y.floor() as i64);
+        let [u, v] = uv;
+        let x = texel_coordinate_f32(subtexel.resolve(u * self.width as f32 - 0.5))?;
+        let y = texel_coordinate_f32(subtexel.resolve(v * self.height as f32 - 0.5))?;
+        let (ix, iy) = (floor_f32(x), floor_f32(y));
         let (tx, ty) = (x - ix as f32, y - iy as f32);
+        let [ax, ay] = address;
         let mut result = [0.; 4];
         for dy in 0..2 {
             for dx in 0..2 {
-                let xx = address[0].index(ix + dx, self.width as u32);
-                let yy = address[1].index(iy + dy, self.height as u32);
+                let xx = ax.index(ix.saturating_add(dx), self.width);
+                let yy = ay.index(iy.saturating_add(dy), self.height);
                 let weight = (if dx == 1 { tx } else { 1. - tx }) * (if dy == 1 { ty } else { 1. - ty });
-                for (c, out) in result.iter_mut().enumerate() {
-                    *out += self.at(xx, yy, 0)[c] * weight;
+                let texel = self.at(xx, yy, 0)?;
+                for (out, t) in result.iter_mut().zip(texel) {
+                    *out += t * weight;
                 }
             }
         }
@@ -454,24 +491,26 @@ impl Decoded {
     /// filtering. A coordinate that isn't finite or past an i32's range is refused.
     pub fn point(&self, uv: [f32; 2], address: [Address; 2]) -> Result<[f32; 4]> {
         self.plane()?;
-        let x = texel_coordinate_f32(uv[0] * self.width as f32)?;
-        let y = texel_coordinate_f32(uv[1] * self.height as f32)?;
-        Ok(self.at(
-            address[0].index(x.floor() as i64, self.width as u32),
-            address[1].index(y.floor() as i64, self.height as u32),
+        let ([u, v], [ax, ay]) = (uv, address);
+        let x = texel_coordinate_f32(u * self.width as f32)?;
+        let y = texel_coordinate_f32(v * self.height as f32)?;
+        self.at(
+            ax.index(floor_f32(x), self.width),
+            ay.index(floor_f32(y), self.height),
             0,
-        ))
+        )
     }
 
     /// The texel of a volume (or a 2D level, one slice) that `uvw` falls in, addressed along each axis, in f32.
     pub fn point_3d(&self, uvw: [f32; 3], address: [Address; 3]) -> Result<[f32; 4]> {
-        let size = [self.width, self.height, self.depth];
-        let mut index = [0usize; 3];
-        for axis in 0..3 {
-            let x = texel_coordinate_f32(uvw[axis] * size[axis] as f32)?;
-            index[axis] = address[axis].index(x.floor() as i64, size[axis] as u32);
-        }
-        Ok(self.at(index[0], index[1], index[2]))
+        let ([u, v, w], [ax, ay, az]) = (uvw, address);
+        let axis =
+            |c: f32, a: Address, n: u32| Ok(a.index(floor_f32(texel_coordinate_f32(c * n as f32)?), n));
+        self.at(
+            axis(u, ax, self.width)?,
+            axis(v, ay, self.height)?,
+            axis(w, az, self.depth)?,
+        )
     }
 
     /// Linear between the eight texels about `uvw` in a volume, in f32: the coordinate per axis (scaled by the size,
@@ -479,33 +518,69 @@ impl Decoded {
     /// then z, and the sum over the texels slice by slice, row by row. A coordinate that isn't finite or past an i32's
     /// range is refused.
     pub fn linear_3d(&self, uvw: [f32; 3], address: [Address; 3], subtexel: Subtexel) -> Result<[f32; 4]> {
-        let size = [self.width, self.height, self.depth];
-        let mut base = [0i64; 3];
-        let mut t = [0f32; 3];
-        for axis in 0..3 {
-            let x = texel_coordinate_f32(subtexel.resolve(uvw[axis] * size[axis] as f32 - 0.5))?;
-            base[axis] = x.floor() as i64;
-            t[axis] = x - base[axis] as f32;
-        }
+        let ([u, v, w], [ax, ay, az]) = (uvw, address);
+        let (sw, sh, sd) = (self.width, self.height, self.depth);
+        let axis = |c: f32, n: u32| -> Result<(i64, f32)> {
+            let t = texel_coordinate_f32(subtexel.resolve(c * n as f32 - 0.5))?;
+            let base = floor_f32(t);
+            Ok((base, t - base as f32))
+        };
+        let ((bx, tx), (by, ty), (bz, tz)) = (axis(u, sw)?, axis(v, sh)?, axis(w, sd)?);
         let weight = |d: i64, t: f32| if d == 1 { t } else { 1. - t };
         let mut result = [0.; 4];
         for dz in 0..2 {
             for dy in 0..2 {
                 for dx in 0..2 {
                     let texel = self.at(
-                        address[0].index(base[0] + dx, self.width as u32),
-                        address[1].index(base[1] + dy, self.height as u32),
-                        address[2].index(base[2] + dz, self.depth as u32),
-                    );
-                    let w = weight(dx, t[0]) * weight(dy, t[1]) * weight(dz, t[2]);
-                    for (c, out) in result.iter_mut().enumerate() {
-                        *out += texel[c] * w;
+                        ax.index(bx.saturating_add(dx), sw),
+                        ay.index(by.saturating_add(dy), sh),
+                        az.index(bz.saturating_add(dz), sd),
+                    )?;
+                    let wt = weight(dx, tx) * weight(dy, ty) * weight(dz, tz);
+                    for (out, t) in result.iter_mut().zip(texel) {
+                        *out += t * wt;
                     }
                 }
             }
         }
         Ok(result)
     }
+}
+
+/// The floor of an f32 coordinate that [`texel_coordinate_f32`] has checked to lie within an i32's range.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the caller checked the coordinate is finite and within an i32's range"
+)]
+fn floor_f32(x: f32) -> i64 {
+    x.floor() as i64
+}
+
+/// The floor of an f64 coordinate that [`texel_coordinate`] has checked to lie within an i32's range.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the caller checked the coordinate is finite and within an i32's range"
+)]
+fn floor_f64(x: f64) -> i64 {
+    x.floor() as i64
+}
+
+/// A decoded sRGB value narrowed to the f32 a decoded texel holds.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "rounding the f64 curve value to the f32 texel is the documented decode"
+)]
+fn to_f32(x: f64) -> f32 {
+    x as f32
+}
+
+/// A level number from a level of detail already clamped to `0..=last`.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the caller clamped the value to a stored level number"
+)]
+fn level_number(lod: f64) -> usize {
+    lod as usize
 }
 
 #[cfg(test)]

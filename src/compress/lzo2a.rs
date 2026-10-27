@@ -36,7 +36,8 @@ impl Stream<'_> {
                 "stream ends before its end code: expected another byte",
             )
         })?;
-        self.at += 1;
+        // `at` indexed a byte of the input, so one more cannot wrap
+        self.at = self.at.saturating_add(1);
         Ok(b)
     }
 
@@ -45,11 +46,12 @@ impl Stream<'_> {
         if self.held < n {
             let b = self.byte()?;
             self.bits |= u32::from(b) << self.held;
-            self.held += 8;
+            self.held = self.held.saturating_add(8);
         }
-        let v = self.bits & ((1 << n) - 1);
+        // a refill leaves at least 8 bits held, and `n` is 1 or 2
+        let v = self.bits & !(u32::MAX << n);
         self.bits >>= n;
-        self.held -= n;
+        self.held = self.held.saturating_sub(n);
         Ok(v)
     }
 }

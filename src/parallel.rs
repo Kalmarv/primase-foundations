@@ -73,7 +73,13 @@ pub fn map<T: Sync, R: Send>(
     items: &[T],
     f: impl Fn(usize, &T) -> R + Sync,
 ) -> Result<Vec<R>, Panicked> {
-    let run = |i: usize| catch_unwind(AssertUnwindSafe(|| f(i, &items[i]))).map_err(|p| panicked(i, &*p));
+    let run = |i: usize| {
+        let item = items.get(i).ok_or_else(|| Panicked {
+            item: i,
+            message: format!("no item {i}: expected one of {}", items.len()),
+        })?;
+        catch_unwind(AssertUnwindSafe(|| f(i, item))).map_err(|p| panicked(i, &*p))
+    };
     let workers = threads.get().min(items.len());
     if workers <= 1 {
         return (0..items.len()).map(run).collect();
@@ -110,7 +116,11 @@ pub fn map<T: Sync, R: Send>(
     let mut first_error: Option<Panicked> = None;
     for (i, r) in done.drain(..).flatten() {
         match r {
-            Ok(v) => out[i] = Some(v),
+            Ok(v) => {
+                if let Some(slot) = out.get_mut(i) {
+                    *slot = Some(v);
+                }
+            }
             Err(e) => {
                 if first_error.as_ref().is_none_or(|f| e.item < f.item) {
                     first_error = Some(e);

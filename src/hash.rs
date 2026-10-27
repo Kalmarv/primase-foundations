@@ -22,8 +22,9 @@ pub fn adler32(init: u32, bytes: &[u8]) -> u32 {
     const MOD: u32 = 65521;
     let (mut a, mut b) = (init & 0xffff, init >> 16);
     for &x in bytes {
-        a = (a + u32::from(x)) % MOD;
-        b = (b + a) % MOD;
+        // `a` and `b` are at most 65535 and each sum adds under 65536 to one, so no sum reaches 2^32
+        a = a.wrapping_add(u32::from(x)) % MOD;
+        b = b.wrapping_add(a) % MOD;
     }
     (b << 16) | a
 }
@@ -109,22 +110,24 @@ pub const MD5_INIT: [u32; 4] = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476];
 /// differently (DXBC's container checksum).
 pub fn md5_block(state: &mut [u32; 4], block: &[u8; 64]) {
     let mut m = [0u32; 16];
-    for (i, w) in m.iter_mut().enumerate() {
-        *w = u32::from_le_bytes([block[4 * i], block[4 * i + 1], block[4 * i + 2], block[4 * i + 3]]);
+    for (w, bytes) in m.iter_mut().zip(block.as_chunks::<4>().0) {
+        *w = u32::from_le_bytes(*bytes);
     }
     let [mut a, mut b, mut c, mut d] = *state;
-    for i in 0..64 {
+    for (i, (&shift, &sine)) in MD5_SHIFT.iter().zip(&MD5_SINE).enumerate() {
+        // i is below 64, so none of these products reaches 448
         let (f, g) = match i / 16 {
             0 => ((b & c) | (!b & d), i),
-            1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
-            2 => (b ^ c ^ d, (3 * i + 5) % 16),
-            _ => (c ^ (b | !d), (7 * i) % 16),
+            1 => ((d & b) | (!d & c), i.wrapping_mul(5).wrapping_add(1) % 16),
+            2 => (b ^ c ^ d, i.wrapping_mul(3).wrapping_add(5) % 16),
+            _ => (c ^ (b | !d), i.wrapping_mul(7) % 16),
         };
+        let word = m.get(g).copied().unwrap_or_default();
         let rotated = a
             .wrapping_add(f)
-            .wrapping_add(MD5_SINE[i])
-            .wrapping_add(m[g])
-            .rotate_left(MD5_SHIFT[i]);
+            .wrapping_add(sine)
+            .wrapping_add(word)
+            .rotate_left(shift);
         (a, b, c, d) = (d, b.wrapping_add(rotated), b, c);
     }
     for (s, x) in state.iter_mut().zip([a, b, c, d]) {
@@ -139,13 +142,15 @@ pub fn md5(bytes: &[u8]) -> [u8; 16] {
     for block in blocks {
         md5_block(&mut state, block);
     }
-    let mut tail = [0u8; 128];
-    tail[..rest.len()].copy_from_slice(rest);
-    tail[rest.len()] = 0x80;
-    let end = if rest.len() < 56 { 64 } else { 128 };
+    // the rest, a 0x80 byte, zeros up to 56 bytes into a block, then the length in bits
+    let mut tail = rest.to_vec();
+    tail.push(0x80);
+    while tail.len() % 64 != 56 {
+        tail.push(0);
+    }
     let bits = (bytes.len() as u64).wrapping_mul(8);
-    tail[end - 8..end].copy_from_slice(&bits.to_le_bytes());
-    for block in tail[..end].as_chunks::<64>().0 {
+    tail.extend_from_slice(&bits.to_le_bytes());
+    for block in tail.as_chunks::<64>().0 {
         md5_block(&mut state, block);
     }
     md5_bytes(state)

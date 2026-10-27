@@ -36,6 +36,10 @@ pub fn linear_to_srgb8(c: f64) -> u8 {
     TABLE.byte(c, linear_to_srgb8_curve)
 }
 /// [`linear_to_srgb8`] evaluated on the curve itself.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a float to byte cast saturates, which is the clamping the curve is defined with"
+)]
 fn linear_to_srgb8_curve(c: f64) -> u8 {
     (linear_to_srgb(c.clamp(0., 1.)) * 255.).round() as u8
 }
@@ -48,20 +52,36 @@ pub fn linear_to_srgb8_f32(c: f32) -> u8 {
     TABLE.byte(c, linear_to_srgb8_f32_curve)
 }
 /// [`linear_to_srgb8_f32`] evaluated on the curve itself.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a float to integer cast saturates, which is the clamping the curve is defined with"
+)]
 fn linear_to_srgb8_f32_curve(c: f32) -> u8 {
     ((linear_to_srgb_f32(c) * 255. + 0.5) as i32).clamp(0, 255) as u8
+}
+/// The byte value that table entry `i` stands for.
+fn table_byte(i: usize) -> u8 {
+    u8::try_from(i).unwrap_or(u8::MAX)
 }
 /// A stored sRGB byte to linear light, `srgb_to_linear(byte / 255)` in f64: the same bits, from a 256-entry table.
 pub fn srgb8_to_linear(byte: u8) -> f64 {
     static TABLE: LazyLock<[f64; 256]> =
-        LazyLock::new(|| std::array::from_fn(|i| srgb_to_linear(f64::from(i as u8) / 255.)));
-    TABLE[usize::from(byte)]
+        LazyLock::new(|| std::array::from_fn(|i| srgb_to_linear(f64::from(table_byte(i)) / 255.)));
+    // the table has every byte; the fallback is the same computation
+    TABLE
+        .get(usize::from(byte))
+        .copied()
+        .unwrap_or_else(|| srgb_to_linear(f64::from(byte) / 255.))
 }
 /// A stored sRGB byte to linear light, `srgb_to_linear_f32(byte / 255)` in f32: the same bits, from a 256-entry table.
 pub fn srgb8_to_linear_f32(byte: u8) -> f32 {
     static TABLE: LazyLock<[f32; 256]> =
-        LazyLock::new(|| std::array::from_fn(|i| srgb_to_linear_f32(f32::from(i as u8) / 255.)));
-    TABLE[usize::from(byte)]
+        LazyLock::new(|| std::array::from_fn(|i| srgb_to_linear_f32(f32::from(table_byte(i)) / 255.)));
+    // the table has every byte; the fallback is the same computation
+    TABLE
+        .get(usize::from(byte))
+        .copied()
+        .unwrap_or_else(|| srgb_to_linear_f32(f32::from(byte) / 255.))
 }
 /// The inputs where an encoding curve's byte steps up: `at[k - 1]` is the smallest input in (0, 1) giving byte `k` or
 /// more, found by bisection over the input's bit patterns (ordered like the values for non-negative floats) with the
@@ -81,11 +101,11 @@ macro_rules! thresholds {
                 let one = (1.0 as $float).to_bits();
                 Thresholds {
                     at: std::array::from_fn(|i| {
-                        let k = i as u8 + 1;
+                        let k = u8::try_from(i).unwrap_or(u8::MAX).saturating_add(1);
                         // curve(0) = 0 < k <= 255 = curve(1): the smallest bit pattern in (0, 1] reaching k
                         let (mut lo, mut hi): ($bits, $bits) = (0, one);
-                        while hi - lo > 1 {
-                            let mid = lo + (hi - lo) / 2;
+                        while hi.abs_diff(lo) > 1 {
+                            let mid = lo.midpoint(hi);
                             if curve(<$float>::from_bits(mid)) >= k {
                                 hi = mid;
                             } else {
@@ -107,10 +127,10 @@ macro_rules! thresholds {
                         .get(i)
                         .is_some_and(|&t| (c - t).abs() <= t * Self::BAND)
                 };
-                if near(k) || (k > 0 && near(k - 1)) {
+                if near(k) || k.checked_sub(1).is_some_and(near) {
                     return curve(c);
                 }
-                k as u8
+                u8::try_from(k).unwrap_or(u8::MAX)
             }
         }
     };

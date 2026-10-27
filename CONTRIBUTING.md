@@ -15,7 +15,7 @@ All four must pass; CI runs the first three on Linux and Windows. The tests that
 
 ## Conventions
 
-- Library code never panics on bytes it is given: a read that cannot succeed is an error that says what was expected and where.
+- Library code never panics on bytes it is given: a read that cannot succeed is an error that says what was expected and where. `lib.rs` denies `clippy::indexing_slicing`, `clippy::arithmetic_side_effects` and `clippy::cast_possible_truncation` outside unit tests, so index with `get`, add with `checked_add` (or `saturating_*` where a wrap is impossible and the line says why), and narrow with `try_from`; an `#[allow]` needs a `reason` and goes on a small function that never sees stored bytes (a float-to-integer cast of a checked value, say).
 - Library modules do no file, environment or process access (`clippy.toml` enforces this); a function that must touch the file system says so in its documentation and opts out explicitly, as `compress::oodle::Oodle::load` does.
 - Say the byte order, rounding or normalization a function uses in its documentation; file formats differ on exactly those points.
 - Every public item has documentation (`missing_docs` is on).

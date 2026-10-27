@@ -50,6 +50,16 @@
 //! ```
 #![warn(missing_docs)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
+// A reader of stored bytes never panics, wraps or truncates silently: every index, sum and narrowing is checked and
+// reports an error. Unit tests build their fixtures by index and are exempt.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation
+    )
+)]
 
 pub mod bytes;
 pub mod color;

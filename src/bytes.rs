@@ -71,7 +71,8 @@ impl BoundsError {
                 (offset, origin)
             }
         };
-        offset as u128 + origin as u128
+        // two `usize`s always sum within a `u128`; saturating only states that to the lint
+        (offset as u128).saturating_add(origin as u128)
     }
 }
 impl fmt::Display for BoundsError {
@@ -208,11 +209,23 @@ impl<'a> View<'a> {
     pub fn with_origin(data: &'a [u8], origin: usize) -> Self {
         Self { data, origin }
     }
+    /// The range of `length` bytes at `offset`, if the view holds it.
+    fn locate(&self, offset: usize, length: usize) -> Result<Range<usize>, BoundsError> {
+        checked_span(offset, length, 1, self.data.len()).map_err(|e| e.with_origin(self.origin))
+    }
+    /// The bytes of a range [`View::locate`] returned.
+    fn bytes_in(&self, span: Range<usize>) -> Result<&'a [u8], BoundsError> {
+        let (offset, length) = (span.start, span.len());
+        self.data.get(span).ok_or(BoundsError::OutOfBounds {
+            offset,
+            origin: self.origin,
+            length,
+            total: self.data.len(),
+        })
+    }
     /// The `length` bytes at `offset`.
     pub fn slice(&self, offset: usize, length: usize) -> Result<&'a [u8], BoundsError> {
-        let span =
-            checked_span(offset, length, 1, self.data.len()).map_err(|e| e.with_origin(self.origin))?;
-        Ok(&self.data[span])
+        self.bytes_in(self.locate(offset, length)?)
     }
     /// The `N` bytes at `offset`.
     pub fn array<const N: usize>(&self, offset: usize) -> Result<[u8; N], BoundsError> {
@@ -259,12 +272,15 @@ impl<'a> Cursor<'a> {
     }
     /// How many bytes are left after the position.
     pub fn remaining(&self) -> usize {
-        self.view.data.len() - self.position
+        // the position never passes the end, but a subtraction that cannot wrap is the cheaper proof
+        self.view.data.len().saturating_sub(self.position)
     }
     /// The next `length` bytes.
     pub fn take(&mut self, length: usize) -> Result<&'a [u8], BoundsError> {
-        let bytes = self.view.slice(self.position, length)?;
-        self.position += length;
+        let span = self.view.locate(self.position, length)?;
+        let end = span.end;
+        let bytes = self.view.bytes_in(span)?;
+        self.position = end;
         Ok(bytes)
     }
     /// The bytes from the position up to `end` (an offset in the view), the cursor left at `end`: refused when `end`
@@ -283,8 +299,11 @@ impl<'a> Cursor<'a> {
     }
     /// The next `N` bytes.
     pub fn array<const N: usize>(&mut self) -> Result<[u8; N], BoundsError> {
-        let bytes = self.view.array(self.position)?;
-        self.position += N;
+        let span = self.view.locate(self.position, N)?;
+        let end = span.end;
+        let mut bytes = [0; N];
+        bytes.copy_from_slice(self.view.bytes_in(span)?);
+        self.position = end;
         Ok(bytes)
     }
     /// The next byte.

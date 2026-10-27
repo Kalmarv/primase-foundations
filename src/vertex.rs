@@ -326,16 +326,21 @@ fn stream_with(
             last_vertex: first.saturating_add(count.saturating_sub(1)),
         });
     }
-    // every element lies inside the checked range, so each read below finds its bytes
-    (0..count)
-        .map(|i| {
-            let off = start + i * stream.stride;
-            let bytes = stream.bytes.get(off..off + size).ok_or(Error::StreamTooShort {
-                needed: off + size,
-                actual: stream.bytes.len(),
-                last_vertex: first + i,
-            })?;
-            decode(element.element.format, bytes)
+    // the range check above makes every element present; the error is that check's, should a read still miss
+    let too_short = Error::StreamTooShort {
+        needed: last,
+        actual: stream.bytes.len(),
+        last_vertex: first.saturating_add(count.saturating_sub(1)),
+    };
+    stream
+        .bytes
+        .get(start..)
+        .unwrap_or_default()
+        .chunks(stream.stride)
+        .take(count)
+        .map(|vertex| match vertex.get(..size) {
+            Some(bytes) => decode(element.element.format, bytes),
+            None => Err(too_short.clone()),
         })
         .collect()
 }
@@ -494,12 +499,14 @@ pub fn split_by_vertex_budget(
     let mut chunk = Chunk::default();
     let mut map = BTreeMap::new();
     for tri in indices.as_chunks::<3>().0 {
-        if chunk.vertices.len() + 3 > max_vertices {
+        if chunk.vertices.len().saturating_add(3) > max_vertices {
             chunks.push(std::mem::take(&mut chunk));
             map.clear();
         }
         for &v in tri {
-            let next = chunk.vertices.len() as u32;
+            let next = u32::try_from(chunk.vertices.len()).map_err(|_| Error::Overflow {
+                what: "piece vertex number",
+            })?;
             let n = *map.entry(v).or_insert_with(|| {
                 chunk.vertices.push(v);
                 next
@@ -516,6 +523,10 @@ pub fn split_by_vertex_budget(
 /// Keeps a stored normal whose length is within 1e-3 of one; otherwise divides it by its length, or gives +Z when the
 /// length is 1e-12 or less. The length is the f32 sum of squares, its square root taken in f64 and rounded to f32. A
 /// non-finite normal is refused.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the documented f64 square root rounded to f32"
+)]
 pub fn renormalize_stored_normal(n: [f32; 3]) -> Result<[f32; 3]> {
     finite("stored normal", &n)?;
     let [x, y, z] = n;

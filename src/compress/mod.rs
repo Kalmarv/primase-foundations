@@ -98,6 +98,14 @@ pub(crate) fn check_claim(
     }
     Ok(())
 }
+/// How many input bytes the decompressor has consumed (a count past `usize` is beyond any input).
+fn total_in(d: &flate2::Decompress) -> usize {
+    usize::try_from(d.total_in()).unwrap_or(usize::MAX)
+}
+/// The input offset a decoder reached when `left` bytes remained.
+fn consumed(input: &[u8], left: usize) -> usize {
+    input.len().saturating_sub(left)
+}
 pub(crate) fn buffer(size: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.try_reserve_exact(size).map_err(|_| Error::Limit)?;
@@ -180,7 +188,7 @@ impl Decompressor for Zstd {
         loop {
             let before = src.len();
             d.decode_blocks(&mut src, BlockDecodingStrategy::UptoBlocks(1))
-                .map_err(|e| invalid("zstd", input.len() - before, e))?;
+                .map_err(|e| invalid("zstd", consumed(input, before), e))?;
             let ready = d.can_collect();
             let total = out.len().checked_add(ready).ok_or(Error::Limit)?;
             if total > expected {
@@ -192,23 +200,30 @@ impl Decompressor for Zstd {
             let at = out.len();
             out.try_reserve(ready).map_err(|_| Error::Limit)?;
             out.resize(total, 0);
-            d.read_exact(&mut out[at..])?;
+            let fresh = out.get_mut(at..).ok_or_else(|| {
+                invalid(
+                    "zstd",
+                    consumed(input, src.len()),
+                    "output shorter than collected",
+                )
+            })?;
+            d.read_exact(fresh)?;
             if d.is_finished() && d.can_collect() == 0 {
                 break;
             }
             if src.len() == before && ready == 0 {
                 return Err(invalid(
                     "zstd",
-                    input.len() - src.len(),
-                    "frame ends before its last block",
+                    consumed(input, src.len()),
+                    "frame ends before its last block: expected another block",
                 ));
             }
         }
         if !src.is_empty() {
             return Err(invalid(
                 "zstd",
-                input.len() - src.len(),
-                "trailing input after the frame",
+                consumed(input, src.len()),
+                "trailing input after the frame: expected the frame to end here",
             ));
         }
         if let (Some(stored), Some(computed)) = (d.get_checksum_from_data(), d.get_calculated_checksum())
@@ -243,10 +258,14 @@ fn inflate(input: &[u8], expected: usize, zlib: bool, incomplete: bool) -> Resul
     let mut out = buffer(expected.checked_add(1).ok_or(Error::Limit)?)?;
     let status = d
         .decompress(input, &mut out, flate2::FlushDecompress::None)
-        .map_err(|e| invalid("deflate/zlib", d.total_in() as usize, e))?;
-    check_size(d.total_out() as usize, expected)?;
-    if d.total_in() as usize != input.len() {
-        return Err(invalid("deflate/zlib", d.total_in() as usize, "trailing input"));
+        .map_err(|e| invalid("deflate/zlib", total_in(&d), e))?;
+    check_size(usize::try_from(d.total_out()).unwrap_or(usize::MAX), expected)?;
+    if total_in(&d) != input.len() {
+        return Err(invalid(
+            "deflate/zlib",
+            total_in(&d),
+            "trailing input: expected the stream to end here",
+        ));
     }
     if status != flate2::Status::StreamEnd && !incomplete {
         return Err(invalid("deflate/zlib", input.len(), "missing stream end"));
@@ -296,7 +315,7 @@ impl Deflate {
                 }
                 out.try_reserve_exact(more).map_err(|_| Error::Limit)?;
             }
-            let taken = usize::try_from(d.total_in()).unwrap_or(usize::MAX);
+            let taken = total_in(&d);
             let rest = input.get(taken..).unwrap_or_default();
             let before = (d.total_in(), d.total_out());
             let status = d
@@ -315,8 +334,12 @@ impl Deflate {
                 return Err(invalid("deflate", input.len(), "missing stream end"));
             }
         }
-        if usize::try_from(d.total_in()).unwrap_or(usize::MAX) != input.len() {
-            return Err(invalid("deflate", d.total_in() as usize, "trailing input"));
+        if total_in(&d) != input.len() {
+            return Err(invalid(
+                "deflate",
+                total_in(&d),
+                "trailing input: expected the stream to end here",
+            ));
         }
         Ok(out)
     }
