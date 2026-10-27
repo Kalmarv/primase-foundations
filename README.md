@@ -120,4 +120,4 @@ The asset-conversion library [primase](https://github.com/Kalmarv/primase) is bu
 
 ## License
 
-GPL-3.0-or-later, see [LICENSE](LICENSE). Dependencies keep their own licenses; in particular the oozextract fork this crate decodes Oodle with is MIT-licensed, as upstream is.
+GPL-3.0-or-later, see [LICENSE](LICENSE). Dependencies keep their own licenses; in particular oozextract, which this crate decodes Oodle with, is MIT-licensed.

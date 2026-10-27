@@ -352,30 +352,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "pin-project-lite"
-version = "0.2.17"
+name = "oozextract"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
-
-[[package]]
-name = "primase-foundations"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "half",
- "libloading",
- "lz4_flex",
- "primase-foundations",
- "primase-oozextract",
- "primase-testdata",
- "ruzstd",
- "thiserror",
-]
-
-[[package]]
-name = "primase-oozextract"
-version = "0.5.6"
-source = "git+https://github.com/Kalmarv/primase-oozextract?rev=9273ca48cd301d0cf7fb7cd3a83c9ecdc6c0bb32#9273ca48cd301d0cf7fb7cd3a83c9ecdc6c0bb32"
+checksum = "890a74cc43300b8e482f62f989bcab89ec760921b0cea87aa5bbb7fdfef1c013"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -383,6 +363,27 @@ dependencies = [
  "log",
  "test-log",
  "wide",
+]
+
+[[package]]
+name = "pin-project-lite"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "primase-foundations"
+version = "0.2.0"
+dependencies = [
+ "flate2",
+ "half",
+ "libloading",
+ "lz4_flex",
+ "oozextract",
+ "primase-foundations",
+ "primase-testdata",
+ "ruzstd",
+ "thiserror",
 ]
 
 [[package]]
