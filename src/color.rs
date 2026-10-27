@@ -29,7 +29,8 @@ srgb_transfer!(srgb_to_linear, linear_to_srgb, f64);
 srgb_transfer!(srgb_to_linear_f32, linear_to_srgb_f32, f32);
 /// Encode linear light with f64 arithmetic, clamping before transfer and rounding to nearest byte: the byte of
 /// `(linear_to_srgb(c.clamp(0, 1)) * 255).round()`, found in a table of the curve's 255 rounding thresholds (no `powf`
-/// per call; see [`Thresholds`]).
+/// per call). The table is checked against the curve near each threshold and for out-of-range inputs, so the result is
+/// the curve's own byte for every input.
 pub fn linear_to_srgb8(c: f64) -> u8 {
     static TABLE: LazyLock<Thresholds<f64>> = LazyLock::new(|| Thresholds::<f64>::new(linear_to_srgb8_curve));
     TABLE.byte(c, linear_to_srgb8_curve)
@@ -40,7 +41,7 @@ fn linear_to_srgb8_curve(c: f64) -> u8 {
 }
 /// Encode linear light with f32 arithmetic and half-up byte quantization.
 /// Clamping follows transfer and the saturating float-to-integer conversion. Found in a table of the curve's rounding
-/// thresholds, as [`linear_to_srgb8`].
+/// thresholds, as `linear_to_srgb8` does.
 pub fn linear_to_srgb8_f32(c: f32) -> u8 {
     static TABLE: LazyLock<Thresholds<f32>> =
         LazyLock::new(|| Thresholds::<f32>::new(linear_to_srgb8_f32_curve));

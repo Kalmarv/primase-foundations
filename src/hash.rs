@@ -1,4 +1,7 @@
-//! Exact game name hashes. Byte functions never normalize their inputs.
+//! The hashes game files key names and checksums by: CRC-32, Adler-32 from any start value, Jenkins one-at-a-time (with
+//! and without case folding), MD5 (including its block function, for formats that pad differently) and SDBM. The byte
+//! functions never normalize their input: no trimming, no path-separator or case changes beyond what a function's
+//! own name says.
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 /// IEEE CRC-32: reflected polynomial 0xEDB88320, initial/final xor 0xFFFFFFFF.
@@ -24,8 +27,8 @@ pub fn adler32(init: u32, bytes: &[u8]) -> u32 {
     }
     (b << 16) | a
 }
-/// Jenkins one-at-a-time over bytes, with ASCII uppercase folded to lowercase,
-/// wrapping u32 at every step (CodeWalker JenkHash ASCII path convention).
+/// Jenkins one-at-a-time over bytes, with ASCII uppercase folded to lowercase, wrapping u32 at every step: the name
+/// hash Grand Theft Auto V's archives use (as CodeWalker's `JenkHash` computes it for ASCII names).
 pub fn joaat(bytes: &[u8]) -> u32 {
     let mut h = 0u32;
     for b in bytes {
@@ -37,8 +40,8 @@ pub fn joaat(bytes: &[u8]) -> u32 {
     h ^= h >> 11;
     h.wrapping_add(h << 15)
 }
-/// Jenkins one-at-a-time over bytes as given (no case folding), wrapping u32 at every step: the hash of the
-/// structure and field names in one archive format's metadata descriptions (`CMapData`, `archetypeName`).
+/// Jenkins one-at-a-time over bytes as given (no case folding), wrapping u32 at every step: the hash of the structure
+/// and field names in Grand Theft Auto V's resource metadata (`CMapData`, `archetypeName`).
 pub fn joaat_exact(bytes: &[u8]) -> u32 {
     let mut h = 0u32;
     for &b in bytes {

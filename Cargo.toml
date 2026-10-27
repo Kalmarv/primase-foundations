@@ -1,6 +1,10 @@
 [package]
 name = "primase-foundations"
-description = "Checked byte reading, game-file hashes, vertex layouts, an ordered parallel map, and the compression codecs games store"
+description = "Checked byte readers, game-file hashes, vertex decoding, texture sampling and the compression codecs (LZ4, deflate, zstd, LZO2A, Oodle) game files use"
+keywords = ["game-files", "binary-parser", "lz4", "oodle", "vertex"]
+categories = ["parser-implementations", "compression", "encoding"]
+readme = "README.md"
+documentation = "https://docs.rs/primase-foundations"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,11 +22,10 @@ libloading = { workspace = true, optional = true }
 oozextract = { workspace = true, optional = true }
 
 [features]
-# the codecs (lz4, deflate/zlib, zstd, LZO2A, Oodle): only crates that decompress pay for them
+# the `compress` module (lz4, deflate/zlib, zstd, LZO2A, Oodle): readers that do not decompress do not pay for it
 compress = ["dep:lz4_flex", "dep:flate2", "dep:ruzstd", "dep:libloading", "dep:oozextract"]
-# oozextract as a second Kraken decoder (`reference`) on Windows, for the gates that hold the game's Oodle library to
-# it (off Windows it is the decoder). Only a [dev-dependencies] entry may enable it, so no production crate on Windows
-# uses it (checks/tests/architecture.rs `dependencies`).
+# oozextract as a second Oodle decoder (`compress::reference`) on Windows, to compare the game's own library against
+# (off Windows it is always there, being the decoder). Meant for dev-dependencies and tests.
 reference-decoder = ["compress"]
 
 [dev-dependencies]

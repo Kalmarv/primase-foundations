@@ -1,22 +1,39 @@
-//! Borrowed byte bounds and the fixed-size numbers read from them. Format, allocation and count policies stay with
-//! callers, and so does the byte order: every multi-byte read states its [`Endian`].
+//! Bounds-checked reading of fixed-size numbers and byte spans from a borrowed slice. Every read either returns the
+//! value or a [`BoundsError`] (or, once a name is attached with [`Field::field`], a [`FieldError`]) that says where the
+//! read was and how far it ran past the data; nothing here panics on short input.
+//!
+//! [`View`] reads at explicit offsets; [`Cursor`] reads in sequence and moves only after a successful read. Both can
+//! be given an `origin`, the offset of their first byte in the file they were cut from, so errors from a nested
+//! structure still report the offset in the file. Format, allocation and count policies stay with the caller, and so
+//! does the byte order: every multi-byte read states its [`Endian`].
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use std::{fmt, ops::Range};
 
-/// Local byte operands and their source origin, retained without lossy arithmetic.
+/// Why a read was refused. The operands are kept as given, so the offset in a message is exact even where adding the
+/// origin would overflow `usize` (see [`BoundsError::absolute`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoundsError {
+    /// `count` entries of `stride` bytes, or `offset` plus their length, do not fit in a `usize`.
     LengthOverflow {
+        /// Where the span starts, within the view.
         offset: usize,
+        /// The file offset of the view's first byte.
         origin: usize,
+        /// The number of entries asked for.
         count: usize,
+        /// The size of each entry in bytes.
         stride: usize,
     },
+    /// The span of `length` bytes at `offset` ends beyond the `total` bytes of the view.
     OutOfBounds {
+        /// Where the span starts, within the view.
         offset: usize,
+        /// The file offset of the view's first byte.
         origin: usize,
+        /// The span's length in bytes.
         length: usize,
+        /// The size of the view in bytes.
         total: usize,
     },
 }
@@ -77,7 +94,9 @@ impl std::error::Error for BoundsError {}
 /// A read of a named field that failed: the field, and where its bytes would be ([`Field::field`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldError {
+    /// The name given to [`Field::field`].
     pub what: &'static str,
+    /// The refused read.
     pub bounds: BoundsError,
 }
 impl fmt::Display for FieldError {
@@ -97,6 +116,7 @@ impl std::error::Error for FieldError {}
 
 /// Names the field a failed read was of.
 pub trait Field<T> {
+    /// Turns a refused read into a [`FieldError`] naming `what`.
     fn field(self, what: &'static str) -> Result<T, FieldError>;
 }
 impl<T> Field<T> for Result<T, BoundsError> {
@@ -108,7 +128,9 @@ impl<T> Field<T> for Result<T, BoundsError> {
 /// The byte order of a multi-byte number: the format's, stated at each read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Endian {
+    /// Least significant byte first.
     Little,
+    /// Most significant byte first.
     Big,
 }
 
@@ -143,8 +165,9 @@ macro_rules! numbers {
 }
 numbers!(u16: u16, i16: i16, u32: u32, i32: i32, u64: u64, i64: i64, f32: f32, f64: f64);
 
-/// Check multiplication, addition, and bounds in that order. A zero stride does
-/// not authorize allocating or processing `count` records; that is parser policy.
+/// The byte range of `count` entries of `stride` bytes starting at `offset` in a view of `total` bytes: the
+/// multiplication, the addition and the bound are each checked, in that order. A zero stride makes every count fit,
+/// so it does not by itself make allocating or processing `count` records safe; that is the caller's policy.
 pub fn checked_span(
     offset: usize,
     count: usize,
@@ -170,12 +193,14 @@ pub fn checked_span(
     Ok(offset..end)
 }
 
+/// A borrowed byte slice read at explicit offsets, with the file offset of its first byte for error reporting.
 #[derive(Clone, Copy, Debug)]
 pub struct View<'a> {
     data: &'a [u8],
     origin: usize,
 }
 impl<'a> View<'a> {
+    /// A view of `data`, whose first byte is offset 0 of the file.
     pub fn new(data: &'a [u8]) -> Self {
         Self::with_origin(data, 0)
     }
@@ -183,11 +208,13 @@ impl<'a> View<'a> {
     pub fn with_origin(data: &'a [u8], origin: usize) -> Self {
         Self { data, origin }
     }
+    /// The `length` bytes at `offset`.
     pub fn slice(&self, offset: usize, length: usize) -> Result<&'a [u8], BoundsError> {
         let span =
             checked_span(offset, length, 1, self.data.len()).map_err(|e| e.with_origin(self.origin))?;
         Ok(&self.data[span])
     }
+    /// The `N` bytes at `offset`.
     pub fn array<const N: usize>(&self, offset: usize) -> Result<[u8; N], BoundsError> {
         let mut bytes = [0; N];
         bytes.copy_from_slice(self.slice(offset, N)?);
@@ -203,22 +230,26 @@ impl<'a> View<'a> {
     }
 }
 
-/// A cursor advances only after a successful checked read or seek.
+/// A sequential reader over a borrowed slice. It advances only after a successful read or seek, so a refused read
+/// leaves it where it was.
 #[derive(Clone, Debug)]
 pub struct Cursor<'a> {
     view: View<'a>,
     position: usize,
 }
 impl<'a> Cursor<'a> {
+    /// A cursor at the start of `data`, whose first byte is offset 0 of the file.
     pub fn new(data: &'a [u8]) -> Self {
         Self::with_origin(data, 0)
     }
+    /// A cursor at the start of `data`, whose first byte is offset `origin` of the file.
     pub fn with_origin(data: &'a [u8], origin: usize) -> Self {
         Self {
             view: View::with_origin(data, origin),
             position: 0,
         }
     }
+    /// The offset of the next byte to read, within the cursor's data.
     pub fn position(&self) -> usize {
         self.position
     }
@@ -226,9 +257,11 @@ impl<'a> Cursor<'a> {
     pub fn bytes(&self) -> &'a [u8] {
         self.view.data
     }
+    /// How many bytes are left after the position.
     pub fn remaining(&self) -> usize {
         self.view.data.len() - self.position
     }
+    /// The next `length` bytes.
     pub fn take(&mut self, length: usize) -> Result<&'a [u8], BoundsError> {
         let bytes = self.view.slice(self.position, length)?;
         self.position += length;
@@ -242,6 +275,7 @@ impl<'a> Cursor<'a> {
         self.position = end;
         Ok(bytes)
     }
+    /// Moves to `offset` (the end of the data is allowed); an offset past it is refused.
     pub fn seek(&mut self, offset: usize) -> Result<(), BoundsError> {
         self.view.slice(offset, 0)?;
         self.position = offset;

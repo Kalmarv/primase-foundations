@@ -25,6 +25,7 @@ impl Threads {
         NonZeroUsize::new(n).map(Threads)
     }
 
+    /// The thread count.
     pub fn get(self) -> usize {
         self.0.get()
     }
@@ -40,7 +41,9 @@ impl Default for Threads {
 /// An item whose work panicked: its index and the panic's message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Panicked {
+    /// The index of the item (or row) whose work panicked; the lowest, when several did.
     pub item: usize,
+    /// The panic message, or a note that there was none.
     pub message: String,
 }
 
@@ -115,6 +118,9 @@ pub fn map<T: Sync, R: Send>(
 
 /// `f(row, slice)` for every `row_len`-long row of `data` (the last may be shorter), on up to `threads` threads, each
 /// row's slice written in place. One thread (or one row) runs on the calling thread.
+///
+/// # Panics
+/// If `row_len` is zero.
 pub fn rows_mut<T: Send>(
     threads: Threads,
     data: &mut [T],

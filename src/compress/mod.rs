@@ -1,4 +1,28 @@
-//! Strict, size-bounded compression adapters. No format autodetection.
+//! The compression codecs games store their data in, behind two traits: [`Decompressor`] and [`Compressor`].
+//!
+//! | codec | type | decode | encode |
+//! | --- | --- | --- | --- |
+//! | LZ4 raw block | [`Lz4`] | yes | yes |
+//! | raw deflate (RFC 1951) | [`Deflate`] | yes | yes |
+//! | zlib (RFC 1950) | [`Zlib`] | yes | yes |
+//! | zlib with a missing end marker or checksum | [`ZlibUnterminated`] | yes | no |
+//! | Zstandard frame (RFC 8878) | [`Zstd`] | yes | no |
+//! | LZO2A | [`Lzo2a`] | yes | no |
+//! | Oodle (Kraken, Mermaid, Selkie, Leviathan) | [`oodle::Oodle`] | yes | Kraken, with the game's library only |
+//!
+//! The adapters are strict. A decode takes the exact output size the container states and refuses a stream that
+//! produces more or fewer bytes, has input left over, ends early, or (where the format carries one) fails its
+//! checksum; the error names the codec and the input offset. There is no format autodetection: the caller says which
+//! codec a stream is. The expected size is the caller's to bound: a decode allocates it up front (fallibly, as
+//! [`Error::Limit`]), and [`LZ4_MAX_RATIO`] and [`DEFLATE_MAX_RATIO`] say how large a claim can be true for a given
+//! input.
+//!
+//! # Oodle
+//!
+//! Oodle is a commercial codec and its library is not part of this crate. [`oodle::Oodle::load`] loads the game's own
+//! copy of the library from a path the caller gives (an `unsafe` call, because loading a native library runs its
+//! initialization). Off Windows, [`oodle::Oodle::open`] with no path decodes with the pure-Rust oozextract crate
+//! instead, which cannot compress. On Windows there is no built-in decoder, so a path is required.
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use std::io::Write;
@@ -10,23 +34,39 @@ pub mod oodle;
 #[cfg(any(feature = "reference-decoder", not(windows)))]
 pub mod reference;
 
+/// Why a stream was refused or a codec could not be used.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The stream is malformed or not what the adapter accepts.
     #[error("{codec} at input offset {offset}: {detail}")]
     Invalid {
+        /// The codec that refused it.
         codec: &'static str,
+        /// Where in the input the problem was found.
         offset: usize,
+        /// What was wrong.
         detail: String,
     },
+    /// The stream decoded to a different number of bytes than expected (`actual` is the amount reached when the
+    /// decoder stopped, which for an overrun can be just past `expected`).
     #[error("output size {actual}, expected {expected}")]
-    Size { expected: usize, actual: usize },
+    Size {
+        /// The size the caller stated.
+        expected: usize,
+        /// The size the stream produced.
+        actual: usize,
+    },
+    /// The output buffer could not be allocated, or a size does not fit the platform's integers.
     #[error("allocation/size limit exceeded")]
     Limit,
+    /// An I/O error from an encoder, or from resolving a library path.
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
+    /// The Oodle library could not be loaded or lacks an export.
     #[error("Oodle library: {0}")]
     Library(#[from] libloading::Error),
 }
+/// A result with this module's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 pub(crate) fn invalid(codec: &'static str, offset: usize, detail: impl ToString) -> Error {
     Error::Invalid {
@@ -48,13 +88,15 @@ pub(crate) fn check_size(actual: usize, expected: usize) -> Result<()> {
         Err(Error::Size { expected, actual })
     }
 }
-/// Decode one exactly framed payload with an externally supplied output size.
+/// Decodes one exactly framed payload to an output size the caller states.
 /// Implementations reject output overrun; the caller must bound untrusted sizes.
 pub trait Decompressor {
+    /// The `expected` bytes `input` decodes to; any other outcome is an error.
     fn decompress(&self, input: &[u8], expected: usize) -> Result<Vec<u8>>;
 }
-/// Encode one payload; framing belongs to the selected codec.
+/// Encodes one payload; framing belongs to the selected codec.
 pub trait Compressor {
+    /// `input` compressed.
     fn compress(&self, input: &[u8]) -> Result<Vec<u8>>;
 }
 
@@ -62,8 +104,8 @@ pub trait Compressor {
 /// adding 255 to it), rounded up: a claimed output size above this times the input is false.
 pub const LZ4_MAX_RATIO: usize = 255;
 
-/// Raw LZ4 block, no size prefix. All input bytes belong to the block; a final
-/// literal sequence terminates it. Output size comes from the enclosing archive.
+/// Raw LZ4 block, no size prefix and no frame. All input bytes belong to the block; a final literal sequence terminates
+/// it. The output size comes from the enclosing archive.
 #[derive(Debug, Clone, Copy)]
 pub struct Lz4;
 impl Decompressor for Lz4 {
@@ -164,10 +206,10 @@ pub struct Deflate;
 /// RFC1950 zlib: header, DEFLATE, Adler32 trailer. Requires StreamEnd and exact consumption.
 #[derive(Debug, Clone, Copy)]
 pub struct Zlib;
-/// TOC compatibility: some sources' TOCs store a zlib stream with a missing final marker or
-/// checksum; that is accepted ONLY if all input is consumed, no decoder error occurs, and exactly
-/// the expected bytes are produced. Incomplete streams cannot authenticate Adler32;
-/// this is a size check, not an integrity check. Complete streams are also accepted.
+/// zlib as some archives' tables of contents store it: with a missing final block marker or Adler-32 checksum. Such a
+/// stream is accepted only if all input is consumed, the decoder reports no error, and exactly the expected bytes are
+/// produced. An incomplete stream cannot be checked against its Adler-32, so this is a size check, not an integrity
+/// check. Complete streams are accepted too.
 #[derive(Debug, Clone, Copy)]
 pub struct ZlibUnterminated;
 fn inflate(input: &[u8], expected: usize, zlib: bool, incomplete: bool) -> Result<Vec<u8>> {

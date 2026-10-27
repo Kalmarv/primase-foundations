@@ -14,13 +14,16 @@ use crate::color::srgb8_to_linear;
 /// Why a sample or a texture's levels are refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    /// The texture or coordinate is invalid; the message says how.
     #[error("invalid image: {0}")]
     Invalid(String),
 }
 
+/// A result with this module's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Where a coordinate outside 0..1 reads.
+/// Where a texel index outside the texture reads (the address modes of Direct3D's `D3D11_TEXTURE_ADDRESS_MODE`,
+/// except border).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Address {
     /// Repeats the texture.
@@ -69,11 +72,16 @@ impl Transfer {
     }
 }
 
-/// An RGBA8 texture's stored levels, decoded once, row by row.
+/// An RGBA8 texture's mip levels, each stored row by row, four bytes a texel. Level `n` is the base size halved `n`
+/// times (at least 1); [`Levels::size`] gives it.
 #[derive(Clone, Debug)]
 pub struct Levels {
+    /// The base level's width in texels.
     pub width: u32,
+    /// The base level's height in texels.
     pub height: u32,
+    /// The RGBA8 bytes of each level, base level first. The sampling methods index them by level and do not check
+    /// that each holds its size's bytes: build them with [`Levels::one`] or from level sizes you have checked.
     pub levels: Vec<Vec<u8>>,
 }
 
@@ -94,9 +102,8 @@ impl Levels {
         })
     }
 
-    /// Each level's rows in reverse order: the texture as a source whose v runs up holds it, row 0 at v = 0 (one
-    /// source's textures, stored bottom row first, which the world stores top row first). Addressing then applies about
-    /// the source's own origin, as its sampler does. A level that isn't its size's whole rows is refused.
+    /// Each level's rows in reverse order, for a texture stored bottom row first when row 0 is wanted at v = 0:
+    /// addressing then applies about that texture's own origin. A level that isn't its size's whole rows is refused.
     pub fn rows_reversed(mut self) -> Result<Levels> {
         for i in 0..self.levels.len() {
             let (w, h) = self.size(i);
@@ -265,8 +272,8 @@ pub enum Subtexel {
     /// Direct3D 11's filtering: the texel coordinate (after scaling by the texture's size) truncated to 8 fractional
     /// bits, 256 subdivisions of a texel, before the weights are taken. The D3D11.3 functional specification requires
     /// at least 8 bits of sub-texel precision (7.18.16.1, Texture Addressing and LOD Precision;
-    /// `D3D11_SUBTEXEL_FRACTIONAL_BIT_COUNT` = 8). Microsoft's WARP rasterizer truncates at 8, as measured against
-    /// it on the layer bake's states, and the source's GPU pixels come from such a filter.
+    /// `D3D11_SUBTEXEL_FRACTIONAL_BIT_COUNT` = 8). Microsoft's WARP software rasterizer truncates at 8, as measured
+    /// against it.
     D3d11,
 }
 
@@ -329,6 +336,7 @@ impl Decoded {
         })
     }
 
+    /// The level's `[width, height]` in texels.
     pub fn dimensions(&self) -> [usize; 2] {
         [self.width, self.height]
     }
@@ -336,6 +344,7 @@ impl Decoded {
     pub fn depth(&self) -> usize {
         self.depth
     }
+    /// The memory the decoded texels take, in bytes (16 a texel).
     pub fn decoded_bytes(&self) -> usize {
         self.texels.len() * 16
     }

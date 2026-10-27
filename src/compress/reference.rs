@@ -1,18 +1,28 @@
-//! oozextract, a second Kraken decoder to hold the game's Oodle library to, behind one boundary: its refusals and its panics
-//! (its decoder asserts where it should refuse) both come back as a [`Failure`], so a corrupt or unsupported stream is a named
-//! error and never a panic inside a gate. Off Windows it is Oodle's decoder ([`crate::compress::oodle::Oodle::portable`]); on Windows it is
-//! a test aid: enable the `reference-decoder` feature from a dev-dependency.
+//! oozextract, a pure-Rust Oodle decoder, behind one boundary: its refusals and its panics (its decoder asserts in some
+//! places where it should refuse) both come back as a [`Failure`], so a corrupt or unsupported stream is an error and
+//! never a panic. Off Windows it is what [`Oodle::open`](crate::compress::oodle::Oodle::open) decodes with when given
+//! no library path; on Windows it is there only with the `reference-decoder` feature, as a second decoder to compare
+//! the game's own library against.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+/// Why oozextract did not give the expected bytes.
 #[derive(Debug, thiserror::Error)]
 pub enum Failure {
+    /// oozextract returned an error for the stream.
     #[error("oozextract refused the stream: {0}")]
     Refused(oozextract::OozError),
+    /// oozextract panicked instead of returning an error (a defect in oozextract); the panic message.
     #[error("oozextract panicked instead of refusing the stream (an upstream defect): {0}")]
     Panicked(String),
+    /// oozextract decoded without error but produced a different number of bytes.
     #[error("oozextract wrote {written} bytes, expected {expected}")]
-    Short { written: usize, expected: usize },
+    Short {
+        /// The bytes it wrote.
+        written: usize,
+        /// The bytes asked for.
+        expected: usize,
+    },
 }
 
 impl Failure {
@@ -36,7 +46,7 @@ impl Failure {
     }
 }
 
-/// The `expected` bytes oozextract decodes from `input`.
+/// The `expected` bytes oozextract decodes from `input`, or why not.
 pub fn decode(input: &[u8], expected: usize) -> Result<Vec<u8>, Failure> {
     let mut out = vec![0; expected];
     let written = catch_unwind(AssertUnwindSafe(|| {

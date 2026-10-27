@@ -1,6 +1,9 @@
-//! Oodle, from a caller-selected, trusted game library (no discovery) where the game ships one for the platform
-//! (Windows), else from oozextract: [`Oodle::open`] picks. The game's library stays the reference; the gates hold
-//! oozextract to it (`reference`).
+//! Oodle, decoded (and, with the game's library, encoded) through [`Oodle`].
+//!
+//! The Oodle library is not shipped with this crate. [`Oodle::load`] loads the copy the game ships, from exactly the
+//! path the caller gives (it is never searched for), for Oodle versions 5, 6 and 9 on 64-bit Windows ([`Version`]).
+//! Off Windows, [`Oodle::open`] without a path decodes with oozextract, a pure-Rust decoder that refuses a stream it
+//! cannot decode and cannot compress. [`Oodle::open`] picks between the two.
 use crate::compress::{Compressor, Decompressor, Result, buffer, check_size, invalid};
 use std::{ffi::c_void, path::Path};
 type Decode = unsafe extern "C" fn(
@@ -31,10 +34,15 @@ type Encode = unsafe extern "C" fn(
     *mut c_void,
     isize,
 ) -> isize;
+/// Which generation of the Oodle library a DLL is. They differ in how the library is asked for a compressed buffer
+/// size.
 #[derive(Debug, Clone, Copy)]
 pub enum Version {
+    /// `oo2core_5_win64.dll`: the one-argument size query.
     V5,
+    /// `oo2core_6_win64.dll`: the one-argument size query.
     V6,
+    /// `oo2core_9_win64.dll`: the two-argument size query.
     V9,
 }
 #[derive(Debug)]
@@ -64,7 +72,7 @@ enum Backend {
     Portable,
 }
 impl Oodle {
-    /// The codec for this platform: the game's library `path` where one is given, else (off Windows) oozextract.
+    /// The codec for this platform: the game's library at `path` where one is given, else (off Windows) oozextract.
     /// Windows has no built-in decoder, so no path is an error there.
     ///
     /// # Safety
@@ -91,7 +99,7 @@ impl Oodle {
             backend: Backend::Portable,
         }
     }
-    /// Load exactly `path` (canonicalized, never searched by basename).
+    /// Loads exactly `path` (canonicalized, never searched for by file name).
     ///
     /// # Safety
     /// Caller must trust the native library and its dependencies: loading executes
@@ -191,7 +199,7 @@ impl Codec {
 
 impl Oodle {
     /// Compress with `codec` at level 4, through the game's library: the portable decoder has no encoder, and the
-    /// gates need streams of every codec the decoders read.
+    /// tests need streams of every codec the decoders read.
     pub fn compress_as(&self, codec: Codec, input: &[u8]) -> Result<Vec<u8>> {
         if input.is_empty() {
             return Ok(Vec::new());
