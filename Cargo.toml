@@ -51,9 +51,9 @@ flate2 = { version = "=1.1.10", default-features = false, features = ["rust_back
 half = { version = "=2.7.1", default-features = false }
 libloading = { version = "=0.9.0", default-features = false, features = ["std"] }
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
-oozextract = { git = "https://github.com/Kalmarv/primase-oozextract", rev = "58b98fa0d69569b69bc95891a784eddd2c22a69e", package = "primase-oozextract", default-features = false, features = ["verbose_errors"] }
+oozextract = { git = "https://github.com/Kalmarv/primase-oozextract", rev = "9273ca48cd301d0cf7fb7cd3a83c9ecdc6c0bb32", package = "primase-oozextract", default-features = false, features = ["verbose_errors"] }
 primase-foundations = { path = "." }
-primase-testdata = { git = "https://github.com/Kalmarv/primase-testdata", rev = "71a28a5b188b259e1d49681823aa00996260f544" }
+primase-testdata = { git = "https://github.com/Kalmarv/primase-testdata", rev = "16df8f765279587d36c68249811d62996a1364e2" }
 ruzstd = { version = "=0.7.3", default-features = false, features = ["std", "hash"] }
 thiserror = { version = "=2.0.21", default-features = false, features = ["std"] }
 

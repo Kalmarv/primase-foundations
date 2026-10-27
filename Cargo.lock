@@ -375,7 +375,7 @@ dependencies = [
 [[package]]
 name = "primase-oozextract"
 version = "0.5.6"
-source = "git+https://github.com/Kalmarv/primase-oozextract?rev=58b98fa0d69569b69bc95891a784eddd2c22a69e#58b98fa0d69569b69bc95891a784eddd2c22a69e"
+source = "git+https://github.com/Kalmarv/primase-oozextract?rev=9273ca48cd301d0cf7fb7cd3a83c9ecdc6c0bb32#9273ca48cd301d0cf7fb7cd3a83c9ecdc6c0bb32"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -388,7 +388,7 @@ dependencies = [
 [[package]]
 name = "primase-testdata"
 version = "0.1.0"
-source = "git+https://github.com/Kalmarv/primase-testdata?rev=71a28a5b188b259e1d49681823aa00996260f544#71a28a5b188b259e1d49681823aa00996260f544"
+source = "git+https://github.com/Kalmarv/primase-testdata?rev=16df8f765279587d36c68249811d62996a1364e2#16df8f765279587d36c68249811d62996a1364e2"
 dependencies = [
  "serde_json",
  "thiserror",
