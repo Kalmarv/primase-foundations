@@ -1,22 +1,18 @@
-//! Independent items worked on the program's stated number of threads ([`Threads`]), with the serial result.
+//! Independent items worked on a stated number of threads ([`Threads`]), with the serial result.
 //!
-//! A program states how many threads a run may use by putting [`Threads`] in the world (`core.threads`); passes read
-//! it with [`Threads::of`] (absent: one, the serial run) and writers take it from their options. [`map`] and
-//! [`rows_mut`] hand items to scoped threads by an atomic work index (or, for rows, a shared queue), each thread one
-//! item at a time, so at most that many items' working buffers exist at once. Results come back in item order and each
-//! item's work sees only that item, so the output is the bytes the serial run makes; a caller that tallies across
-//! items collects per item and combines in index order. A panicking item becomes an [`Panicked`] error naming it: the
-//! other threads take no new item and the call returns once they finish the one they hold. No global state: nothing
-//! here outlives the call.
+//! [`map`] and [`rows_mut`] hand items to scoped threads by an atomic work index (or, for rows, a shared queue), each
+//! thread one item at a time, so at most that many items' working buffers exist at once. Results come back in item
+//! order and each item's work sees only that item, so the output is the bytes the serial run makes; a caller that
+//! tallies across items collects per item and combines in index order. A panicking item becomes a [`Panicked`] error
+//! naming it: the other threads take no new item and the call returns once they finish the one they hold. No global
+//! state: nothing here outlives the call.
 
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use crate::{Resource, World};
-
-/// How many threads a run's parallel work may use: the program's statement (`core.threads`), one when it states none.
+/// How many threads a run's parallel work may use; one is the serial run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Threads(pub NonZeroUsize);
 
@@ -33,10 +29,6 @@ impl Threads {
         self.0.get()
     }
 
-    /// What the world `w` states, one when it states nothing.
-    pub fn of(w: &World) -> Threads {
-        w.resource::<Threads>().copied().unwrap_or(Threads::ONE)
-    }
 }
 
 impl Default for Threads {
@@ -44,10 +36,6 @@ impl Default for Threads {
     fn default() -> Threads {
         Threads::ONE
     }
-}
-
-impl Resource for Threads {
-    const NAME: &'static str = "core.threads";
 }
 
 /// An item whose work panicked: its index and the panic's message.
@@ -255,14 +243,5 @@ mod tests {
         for n in [2, 7, 32] {
             assert_eq!(fill(n), serial, "{n} threads");
         }
-    }
-
-    /// A world states its thread count; one when it states none.
-    #[test]
-    fn a_world_states_its_threads() {
-        let mut w = World::new();
-        assert_eq!(Threads::of(&w), Threads::ONE);
-        w.insert_resource(threads(6));
-        assert_eq!(Threads::of(&w).get(), 6);
     }
 }
