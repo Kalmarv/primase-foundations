@@ -48,7 +48,7 @@
 //! assert_eq!(refusal.to_string(), "entry count at 0x4: 4 bytes run past the end of 6");
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 // A reader of stored bytes never panics, wraps or truncates silently: every index, sum and narrowing is checked and
 // reports an error. Unit tests build their fixtures by index and are exempt.

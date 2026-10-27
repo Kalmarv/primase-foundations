@@ -116,8 +116,8 @@ Every section and key is optional and every value is a string. The keys this cra
 
 Building needs a Rust toolchain of at least 1.99 (edition 2024); `rust-toolchain.toml` pins 1.99.0.
 
+The asset-conversion library [primase](https://github.com/Kalmarv/primase) is built on this crate.
+
 ## License
 
 GPL-3.0-or-later, see [LICENSE](LICENSE). Dependencies keep their own licenses; in particular the oozextract fork this crate decodes Oodle with is MIT-licensed, as upstream is.
-
-Used by primase, a game-asset conversion library.
