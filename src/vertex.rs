@@ -8,17 +8,91 @@
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use std::collections::BTreeMap;
-/// Why vertex data was refused; the message says what was wrong.
-#[derive(Debug, thiserror::Error)]
-#[error("invalid vertex input: {0}")]
-pub struct Error(pub String);
+/// Why vertex data was refused: each variant is one way the input is wrong, with the numbers that show it.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Error {
+    /// A DXGI format number [`Format`] does not list.
+    #[error("unsupported DXGI format {id}: expected one of 2, 6, 10, 13, 16, 24, 28, 34, 35, 37")]
+    UnsupportedFormat {
+        /// The number given.
+        id: u32,
+    },
+    /// An element given to [`Format::decode`] that is not the format's size.
+    #[error("element of {actual} bytes: expected {expected} for {format:?}")]
+    ElementSize {
+        /// The format being decoded.
+        format: Format,
+        /// [`Format::size`].
+        expected: usize,
+        /// The bytes given.
+        actual: usize,
+    },
+    /// A value that is NaN or infinite where only finite ones are accepted; `what` names it.
+    #[error("{what} is not finite: expected a finite number")]
+    NonFinite {
+        /// Which input or result.
+        what: &'static str,
+    },
+    /// A layout or stream offset that does not fit a `usize`; `what` names it.
+    #[error("{what} overflows: expected offsets that fit {} bits", usize::BITS)]
+    Overflow {
+        /// Which offset or end.
+        what: &'static str,
+    },
+    /// An element that does not fit inside its stream's stride (or a stride of zero).
+    #[error(
+        "element at offset {offset} of {size} bytes does not fit a stride of {stride}: expected offset + size <= stride"
+    )]
+    ElementBeyondStride {
+        /// The element's offset in its vertex.
+        offset: usize,
+        /// The element's size.
+        size: usize,
+        /// The stream's stride.
+        stride: usize,
+    },
+    /// A stream too short for the vertices asked for.
+    #[error(
+        "stream of {actual} bytes ends before byte {needed}, where vertex {last_vertex} ends: expected at least {needed} bytes"
+    )]
+    StreamTooShort {
+        /// The byte offset in the stream the last element read would end at.
+        needed: usize,
+        /// The stream's size.
+        actual: usize,
+        /// The number of the last vertex asked for.
+        last_vertex: usize,
+    },
+    /// A vertex budget outside the 3..=65535 a piece of 16-bit indices allows.
+    #[error("vertex budget {budget}: expected 3..=65535")]
+    VertexBudget {
+        /// The budget given.
+        budget: usize,
+    },
+    /// A triangle list whose length is not a multiple of three.
+    #[error("triangle list of {len} indices: expected a multiple of 3")]
+    PartialTriangle {
+        /// The list's length.
+        len: usize,
+    },
+    /// An index at or past the vertex count.
+    #[error("index {index} at position {position}: expected below the vertex count {vertex_count}")]
+    IndexOutOfRange {
+        /// Where in the index list.
+        position: usize,
+        /// The index.
+        index: u32,
+        /// The number of vertices.
+        vertex_count: usize,
+    },
+}
 /// A result with this module's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
-fn finite(v: &[f32]) -> Result<()> {
+fn finite(what: &'static str, v: &[f32]) -> Result<()> {
     if v.iter().all(|x| x.is_finite()) {
         Ok(())
     } else {
-        Err(Error("non-finite value".into()))
+        Err(Error::NonFinite { what })
     }
 }
 /// Supported DXGI element encodings. Unknown numeric IDs are rejected.
@@ -60,7 +134,7 @@ impl Format {
             34 => Self::Half2,
             35 => Self::Unorm16x2,
             37 => Self::Snorm16x2,
-            _ => return Err(Error(format!("unsupported DXGI format {id}"))),
+            _ => return Err(Error::UnsupportedFormat { id }),
         })
     }
     /// The element's size in bytes.
@@ -76,48 +150,48 @@ impl Format {
     /// are zero. NaN and infinity are refused.
     pub fn decode(self, data: &[u8]) -> Result<[f32; 4]> {
         let out = self.decode_raw(data)?;
-        finite(&out)?;
+        finite("decoded element", &out)?;
         Ok(out)
     }
     /// [`Format::decode`] keeping NaN and infinity as stored, for a reader whose own rules say what a non-finite
     /// value means.
     pub fn decode_raw(self, data: &[u8]) -> Result<[f32; 4]> {
         if data.len() != self.size() {
-            return Err(Error(format!(
-                "expected {} element bytes, got {}",
-                self.size(),
-                data.len()
-            )));
+            return Err(Error::ElementSize {
+                format: self,
+                expected: self.size(),
+                actual: data.len(),
+            });
         }
         let mut out = [0.; 4];
         match self {
             Self::Float2 | Self::Float3 | Self::Float4 => {
-                for (i, b) in data.as_chunks::<4>().0.iter().enumerate() {
-                    out[i] = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                for (o, b) in out.iter_mut().zip(data.as_chunks::<4>().0) {
+                    *o = f32::from_le_bytes(*b);
                 }
             }
             Self::Half2 | Self::Half4 => {
-                for (i, b) in data.as_chunks::<2>().0.iter().enumerate() {
-                    out[i] = half::f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32();
+                for (o, b) in out.iter_mut().zip(data.as_chunks::<2>().0) {
+                    *o = half::f16::from_bits(u16::from_le_bytes(*b)).to_f32();
                 }
             }
             Self::Snorm16x2 | Self::Snorm16x4 => {
-                for (i, b) in data.as_chunks::<2>().0.iter().enumerate() {
-                    out[i] = snorm16(i16::from_le_bytes([b[0], b[1]]));
+                for (o, b) in out.iter_mut().zip(data.as_chunks::<2>().0) {
+                    *o = snorm16(i16::from_le_bytes(*b));
                 }
             }
             Self::Unorm16x2 => {
-                for (i, b) in data.as_chunks::<2>().0.iter().enumerate() {
-                    out[i] = u16::from_le_bytes([b[0], b[1]]) as f32 / 65535.;
+                for (o, b) in out.iter_mut().zip(data.as_chunks::<2>().0) {
+                    *o = u16::from_le_bytes(*b) as f32 / 65535.;
                 }
             }
             Self::Unorm8x4 => {
-                for i in 0..4 {
-                    out[i] = data[i] as f32 / 255.;
+                for (o, b) in out.iter_mut().zip(data) {
+                    *o = f32::from(*b) / 255.;
                 }
             }
             Self::Unorm10x3A2 => {
-                let p = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+                let p = u32::from_le_bytes(data.first_chunk().copied().unwrap_or_default());
                 out = [
                     (p & 1023) as f32 / 1023.,
                     ((p >> 10) & 1023) as f32 / 1023.,
@@ -167,12 +241,12 @@ pub fn resolve_layout(elements: &[Element]) -> Result<Vec<ResolvedElement>> {
     for e in elements {
         let cur = cursors.entry(e.slot).or_default();
         let offset = e.offset.unwrap_or(*cur);
-        *cur = cur
-            .checked_add(e.format.size())
-            .ok_or_else(|| Error("layout offset overflow".into()))?;
+        *cur = cur.checked_add(e.format.size()).ok_or(Error::Overflow {
+            what: "slot's append offset",
+        })?;
         offset
             .checked_add(e.format.size())
-            .ok_or_else(|| Error("element end overflow".into()))?;
+            .ok_or(Error::Overflow { what: "element end" })?;
         result.push(ResolvedElement {
             element: e.clone(),
             offset,
@@ -221,62 +295,80 @@ fn stream_with(
     let end = element
         .offset
         .checked_add(size)
-        .ok_or_else(|| Error("offset overflow".into()))?;
+        .ok_or(Error::Overflow { what: "element end" })?;
     if stream.stride == 0 || end > stream.stride {
-        return Err(Error("element extends beyond stride".into()));
+        return Err(Error::ElementBeyondStride {
+            offset: element.offset,
+            size,
+            stride: stream.stride,
+        });
     }
+    let overflow = Error::Overflow {
+        what: "stream offset",
+    };
     let start = first
         .checked_mul(stream.stride)
         .and_then(|x| x.checked_add(stream.offset))
         .and_then(|x| x.checked_add(element.offset))
-        .ok_or_else(|| Error("stream offset overflow".into()))?;
-    let last = if count == 0 {
-        start
-    } else {
-        (count - 1)
+        .ok_or(overflow.clone())?;
+    let last = match count.checked_sub(1) {
+        None => start,
+        Some(n) => n
             .checked_mul(stream.stride)
             .and_then(|x| x.checked_add(start))
             .and_then(|x| x.checked_add(size))
-            .ok_or_else(|| Error("stream end overflow".into()))?
+            .ok_or(overflow)?,
     };
     if last > stream.bytes.len() {
-        return Err(Error(format!(
-            "stream needs {last} bytes, has {}",
-            stream.bytes.len()
-        )));
+        return Err(Error::StreamTooShort {
+            needed: last,
+            actual: stream.bytes.len(),
+            last_vertex: first.saturating_add(count.saturating_sub(1)),
+        });
     }
+    // every element lies inside the checked range, so each read below finds its bytes
     (0..count)
         .map(|i| {
             let off = start + i * stream.stride;
-            decode(element.element.format, &stream.bytes[off..off + size])
+            let bytes = stream.bytes.get(off..off + size).ok_or(Error::StreamTooShort {
+                needed: off + size,
+                actual: stream.bytes.len(),
+                last_vertex: first + i,
+            })?;
+            decode(element.element.format, bytes)
         })
         .collect()
 }
 /// Per-axis `v * scale + translate`, rounded at each f32 operation (not fused). Non-finite inputs or results are
 /// refused.
 pub fn scale_translate(v: [f32; 3], scale: [f32; 3], translate: [f32; 3]) -> Result<[f32; 3]> {
-    finite(&v)?;
-    finite(&scale)?;
-    finite(&translate)?;
-    let r = std::array::from_fn(|i| v[i] * scale[i] + translate[i]);
-    finite(&r)?;
+    finite("position", &v)?;
+    finite("scale", &scale)?;
+    finite("translation", &translate)?;
+    let ([x, y, z], [sx, sy, sz], [tx, ty, tz]) = (v, scale, translate);
+    let r = [x * sx + tx, y * sy + ty, z * sz + tz];
+    finite("scaled position", &r)?;
     Ok(r)
 }
 /// Transforms a UV pair by `t = [u offset, u scale, v offset, v scale]` (`u * scale + offset`), then flips V (`1 - v`).
 /// Non-finite inputs or results are refused.
 pub fn transform_uv(uv: [f32; 2], t: [f32; 4]) -> Result<[f32; 2]> {
-    finite(&uv)?;
-    finite(&t)?;
-    let r = [uv[0] * t[1] + t[0], 1. - (uv[1] * t[3] + t[2])];
-    finite(&r)?;
+    finite("uv", &uv)?;
+    finite("uv transform", &t)?;
+    let ([u, v], [u_offset, u_scale, v_offset, v_scale]) = (uv, t);
+    let r = [u * u_scale + u_offset, 1. - (v * v_scale + v_offset)];
+    finite("transformed uv", &r)?;
     Ok(r)
 }
 /// Normalizes in f32; a zero vector stays zero. A non-finite input, or a length that overflows, is refused.
 pub fn normalize(v: [f32; 3]) -> Result<[f32; 3]> {
-    finite(&v)?;
-    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    finite("normal", &v)?;
+    let [x, y, z] = v;
+    let len = (x * x + y * y + z * z).sqrt();
     if !len.is_finite() {
-        return Err(Error("normal length overflow".into()));
+        return Err(Error::Overflow {
+            what: "normal length",
+        });
     }
     Ok(if len > 0. { v.map(|x| x / len) } else { v })
 }
@@ -307,12 +399,13 @@ pub fn packed_position32(p: u32, scale: [f32; 3], offset: [f32; 3]) -> Result<[f
 /// Unpacks a position stored as 21, 21 and 22 bits (x in the low bits) within the inclusive box `min..=max`. The scale
 /// per axis is `(max - min)` divided by the field's maximum (2^21 - 1, 2^21 - 1, 2^22 - 1), all in f32.
 pub fn packed_position64(p: u64, min: [f32; 3], max: [f32; 3]) -> Result<[f32; 3]> {
-    finite(&min)?;
-    finite(&max)?;
+    finite("box minimum", &min)?;
+    finite("box maximum", &max)?;
+    let ([min_x, min_y, min_z], [max_x, max_y, max_z]) = (min, max);
     let scale = [
-        (max[0] - min[0]) / 2097151.,
-        (max[1] - min[1]) / 2097151.,
-        (max[2] - min[2]) / 4194303.,
+        (max_x - min_x) / 2097151.,
+        (max_y - min_y) / 2097151.,
+        (max_z - min_z) / 4194303.,
     ];
     scale_translate(
         [
@@ -330,13 +423,14 @@ pub fn packed_position64(p: u64, min: [f32; 3], max: [f32; 3]) -> Result<[f32; 3
 pub fn strip_to_list(strip: &[u32], reverse: bool) -> Vec<u32> {
     let mut out = Vec::new();
     for (i, t) in strip.windows(3).enumerate() {
-        if t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
+        let &[a, b, c] = t else { continue };
+        if a == b || b == c || a == c {
             continue;
         }
         if (i % 2 == 1) ^ reverse {
-            out.extend_from_slice(&[t[1], t[0], t[2]])
+            out.extend_from_slice(&[b, a, c])
         } else {
-            out.extend_from_slice(t)
+            out.extend_from_slice(&[a, b, c])
         }
     }
     out
@@ -368,7 +462,8 @@ pub struct Chunk {
 /// Splits a triangle list into pieces of at most 65,535 vertices, for formats whose pieces use 16-bit indices. Before
 /// each triangle the current piece is closed if its vertex count plus 3 would exceed the limit, even when that triangle
 /// reuses vertices already in the piece. Triangles stay in order and unused source vertices are omitted. A triangle
-/// list that is not whole triangles, or indexes a vertex at or past `vertex_count`, is refused.
+/// list that is not whole triangles ([`Error::PartialTriangle`]), or indexes a vertex at or past `vertex_count`
+/// ([`Error::IndexOutOfRange`], naming the position), is refused.
 pub fn split_triangles(indices: &[u32], vertex_count: usize) -> Result<Vec<Chunk>> {
     split_by_vertex_budget(indices, vertex_count, 65535)
 }
@@ -379,10 +474,21 @@ pub fn split_by_vertex_budget(
     max_vertices: usize,
 ) -> Result<Vec<Chunk>> {
     if !(3..=65535).contains(&max_vertices) {
-        return Err(Error("vertex budget must be 3..=65535".into()));
+        return Err(Error::VertexBudget { budget: max_vertices });
     }
-    if !indices.len().is_multiple_of(3) || indices.iter().any(|&i| i as usize >= vertex_count) {
-        return Err(Error("invalid triangle indices".into()));
+    if !indices.len().is_multiple_of(3) {
+        return Err(Error::PartialTriangle { len: indices.len() });
+    }
+    if let Some((position, &index)) = indices
+        .iter()
+        .enumerate()
+        .find(|&(_, &i)| i as usize >= vertex_count)
+    {
+        return Err(Error::IndexOutOfRange {
+            position,
+            index,
+            vertex_count,
+        });
     }
     let mut chunks = Vec::new();
     let mut chunk = Chunk::default();
@@ -411,9 +517,10 @@ pub fn split_by_vertex_budget(
 /// length is 1e-12 or less. The length is the f32 sum of squares, its square root taken in f64 and rounded to f32. A
 /// non-finite normal is refused.
 pub fn renormalize_stored_normal(n: [f32; 3]) -> Result<[f32; 3]> {
-    finite(&n)?;
-    let len = ((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) as f64).sqrt() as f32;
-    finite(&[len])?;
+    finite("stored normal", &n)?;
+    let [x, y, z] = n;
+    let len = ((x * x + y * y + z * z) as f64).sqrt() as f32;
+    finite("stored normal length", &[len])?;
     Ok(if (len - 1.).abs() > 1e-3 {
         if len > 1e-12 {
             n.map(|v| v / len)

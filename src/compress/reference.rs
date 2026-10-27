@@ -15,6 +15,12 @@ pub enum Failure {
     /// oozextract panicked instead of returning an error (a defect in oozextract); the panic message.
     #[error("oozextract panicked instead of refusing the stream (an upstream defect): {0}")]
     Panicked(String),
+    /// The output buffer for the expected size could not be allocated.
+    #[error("cannot allocate the expected {expected} output bytes")]
+    Limit {
+        /// The bytes asked for.
+        expected: usize,
+    },
     /// oozextract decoded without error but produced a different number of bytes.
     #[error("oozextract wrote {written} bytes, expected {expected}")]
     Short {
@@ -48,7 +54,10 @@ impl Failure {
 
 /// The `expected` bytes oozextract decodes from `input`, or why not.
 pub fn decode(input: &[u8], expected: usize) -> Result<Vec<u8>, Failure> {
-    let mut out = vec![0; expected];
+    let mut out = Vec::new();
+    out.try_reserve_exact(expected)
+        .map_err(|_| Failure::Limit { expected })?;
+    out.resize(expected, 0);
     let written = catch_unwind(AssertUnwindSafe(|| {
         oozextract::Extractor::new().read_from_slice(input, &mut out)
     }))

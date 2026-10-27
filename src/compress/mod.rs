@@ -13,9 +13,12 @@
 //! The adapters are strict. A decode takes the exact output size the container states and refuses a stream that
 //! produces more or fewer bytes, has input left over, ends early, or (where the format carries one) fails its
 //! checksum; the error names the codec and the input offset. There is no format autodetection: the caller says which
-//! codec a stream is. The expected size is the caller's to bound: a decode allocates it up front (fallibly, as
-//! [`Error::Limit`]), and [`LZ4_MAX_RATIO`] and [`DEFLATE_MAX_RATIO`] say how large a claim can be true for a given
-//! input.
+//! codec a stream is. A size claimed by a container is untrusted, so what a decode allocates for it is bounded by the
+//! input: LZ4, deflate, zlib and LZO2A refuse, before allocating anything, a claim above their format's ratio
+//! ([`LZ4_MAX_RATIO`], [`DEFLATE_MAX_RATIO`], [`LZO2A_MAX_RATIO`]) times the input's length, and zstd grows its output
+//! block by block as the stream produces it. Oodle's ratio is not bounded here: its decode allocates the claimed size
+//! up front (fallibly, as [`Error::Limit`]), so bound the size before asking. The tighter bound a container knows is
+//! the caller's to apply.
 //!
 //! # Oodle
 //!
@@ -75,6 +78,26 @@ pub(crate) fn invalid(codec: &'static str, offset: usize, detail: impl ToString)
         detail: detail.to_string(),
     }
 }
+/// Refuses, before anything is allocated for it, a claimed output of `expected` bytes from `input_len` bytes of a format
+/// that cannot expand more than `max_ratio` to 1.
+pub(crate) fn check_claim(
+    codec: &'static str,
+    input_len: usize,
+    expected: usize,
+    max_ratio: usize,
+) -> Result<()> {
+    let most = input_len.saturating_mul(max_ratio);
+    if expected > most {
+        return Err(invalid(
+            codec,
+            0,
+            format!(
+                "the container claims {expected} output bytes, but {input_len} input bytes make at most {most} ({max_ratio}:1)"
+            ),
+        ));
+    }
+    Ok(())
+}
 pub(crate) fn buffer(size: usize) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.try_reserve_exact(size).map_err(|_| Error::Limit)?;
@@ -111,8 +134,9 @@ pub struct Lz4;
 impl Decompressor for Lz4 {
     fn decompress(&self, input: &[u8], expected: usize) -> Result<Vec<u8>> {
         if input.is_empty() {
-            return Err(invalid("lz4", 0, "missing token"));
+            return Err(invalid("lz4", 0, "missing token: expected at least one byte"));
         }
+        check_claim("lz4", input.len(), expected, LZ4_MAX_RATIO)?;
         let mut out = buffer(expected)?;
         let n = lz4_flex::block::decompress_into(input, &mut out).map_err(|e| invalid("lz4", 0, e))?;
         check_size(n, expected)?;
@@ -151,8 +175,8 @@ impl Decompressor for Zstd {
         let mut d = FrameDecoder::new();
         let mut src = input;
         d.init(&mut src).map_err(|e| invalid("zstd", 0, e))?;
+        // grown with what the stream produces, which the check below keeps within `expected`
         let mut out = Vec::new();
-        out.try_reserve_exact(expected).map_err(|_| Error::Limit)?;
         loop {
             let before = src.len();
             d.decode_blocks(&mut src, BlockDecodingStrategy::UptoBlocks(1))
@@ -166,6 +190,7 @@ impl Decompressor for Zstd {
                 });
             }
             let at = out.len();
+            out.try_reserve(ready).map_err(|_| Error::Limit)?;
             out.resize(total, 0);
             d.read_exact(&mut out[at..])?;
             if d.is_finished() && d.can_collect() == 0 {
@@ -213,6 +238,7 @@ pub struct Zlib;
 #[derive(Debug, Clone, Copy)]
 pub struct ZlibUnterminated;
 fn inflate(input: &[u8], expected: usize, zlib: bool, incomplete: bool) -> Result<Vec<u8>> {
+    check_claim("deflate/zlib", input.len(), expected, DEFLATE_MAX_RATIO)?;
     let mut d = flate2::Decompress::new(zlib);
     let mut out = buffer(expected.checked_add(1).ok_or(Error::Limit)?)?;
     let status = d
@@ -240,6 +266,10 @@ impl Decompressor for Deflate {
 /// The most bytes a DEFLATE stream can produce for one byte of input (RFC 1951: a match of 258 bytes takes about two
 /// bits), rounded up: a claimed output size above this times the input is false.
 pub const DEFLATE_MAX_RATIO: usize = 1032;
+
+/// The most bytes an LZO2A stream can produce for one byte of input, rounded up: a long match of length `9 + 255 z + n`
+/// takes the two bytes of its distance, `z` zero bytes and the byte `n`, so its output stays under 255 times its input.
+pub const LZO2A_MAX_RATIO: usize = 255;
 
 impl Deflate {
     /// A complete raw DEFLATE stream whose output size is not stated, at most `max` bytes. The output grows with what

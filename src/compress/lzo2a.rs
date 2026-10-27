@@ -12,7 +12,7 @@
 //! Strict as the crate's other codecs: the end-of-stream code is required, every input byte must be consumed by then,
 //! a match may not reach before the output's start, and the output must be exactly the expected size.
 
-use crate::compress::{Decompressor, Error, Result, invalid};
+use crate::compress::{Decompressor, Error, LZO2A_MAX_RATIO, Result, check_claim, invalid};
 
 const CODEC: &str = "lzo2a";
 
@@ -29,10 +29,13 @@ struct Stream<'a> {
 
 impl Stream<'_> {
     fn byte(&mut self) -> Result<u8> {
-        let b = *self
-            .input
-            .get(self.at)
-            .ok_or_else(|| invalid(CODEC, self.at, "stream ends before its end code"))?;
+        let b = *self.input.get(self.at).ok_or_else(|| {
+            invalid(
+                CODEC,
+                self.at,
+                "stream ends before its end code: expected another byte",
+            )
+        })?;
         self.at += 1;
         Ok(b)
     }
@@ -53,6 +56,7 @@ impl Stream<'_> {
 
 impl Decompressor for Lzo2a {
     fn decompress(&self, input: &[u8], expected: usize) -> Result<Vec<u8>> {
+        check_claim(CODEC, input.len(), expected, LZO2A_MAX_RATIO)?;
         let mut out: Vec<u8> = Vec::new();
         out.try_reserve_exact(expected).map_err(|_| Error::Limit)?;
         let mut s = Stream {
@@ -62,20 +66,24 @@ impl Decompressor for Lzo2a {
             held: 0,
         };
         loop {
+            // where the current match's operand bytes begin, for the error of a match that reaches before the output
+            let operands;
             let (length, distance) = if s.flags(1)? == 0 {
                 let b = s.byte()?;
                 if out.len() == expected {
                     return Err(Error::Size {
                         expected,
-                        actual: expected + 1,
+                        actual: expected.saturating_add(1),
                     });
                 }
                 out.push(b);
                 continue;
             } else if s.flags(1)? == 0 {
                 let length = 2 + s.flags(2)? as usize;
+                operands = s.at;
                 (length, 1 + usize::from(s.byte()?))
             } else {
+                operands = s.at;
                 let a = s.byte()?;
                 let b = s.byte()?;
                 let distance = usize::from(a & 31) | usize::from(b) << 5;
@@ -105,8 +113,12 @@ impl Decompressor for Lzo2a {
                 .ok_or_else(|| {
                     invalid(
                         CODEC,
-                        s.at,
-                        format!("match {distance} back at output {}", out.len()),
+                        operands,
+                        format!(
+                            "match {distance} bytes back at output position {}: expected at most {}",
+                            out.len(),
+                            out.len()
+                        ),
                     )
                 })?;
             let end = out.len().checked_add(length).ok_or(Error::Limit)?;
@@ -117,13 +129,19 @@ impl Decompressor for Lzo2a {
                 });
             }
             // the match may overlap what it writes (distance < length repeats a run): copy byte by byte
-            for k in from..from + length {
-                let b = out[k];
+            for k in from..from.saturating_add(length) {
+                let b = *out
+                    .get(k)
+                    .ok_or_else(|| invalid(CODEC, operands, "match reads past the output"))?;
                 out.push(b);
             }
         }
         if s.at != input.len() {
-            return Err(invalid(CODEC, s.at, "input after the end code"));
+            return Err(invalid(
+                CODEC,
+                s.at,
+                "input after the end code: expected the stream to end here",
+            ));
         }
         if out.len() != expected {
             return Err(Error::Size {

@@ -1,6 +1,7 @@
 //! Optional private real-data gate over `oracles.corpus.general/codecs.tsv`: game streams with what third-party decoders
-//! make of them (`tests/oracles/codecs.py`: Python's zlib and the lz4 package; LZO 2.10's own `lzo2a_decompress_safe`
-//! for the lzo2a rows, through `tests/oracles/lzo2a.c`). Each row is
+//! make of them (`tests/oracles/codecs.py`: Python's zlib and the lz4 package, which writes lz4, deflate and zlib rows
+//! only). A `lzo2a` row, if the TSV carries one, is a reference made outside this repository with LZO 2.10's own
+//! `lzo2a_decompress_safe`; nothing here produces it. Each row is
 //! `codec<TAB>input<TAB>reference`, a relative path relative to the TSV's folder; bytes stay outside the repository.
 //! Codec names: lz4, deflate, zlib, zlib-unterminated, lzo2a. Oodle uses the DLL module's gate instead.
 mod inputs;

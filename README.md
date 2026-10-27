@@ -72,6 +72,7 @@ Each codec decodes with `Decompressor::decompress(input, expected_len)`. The exp
 
 - The byte readers, the vertex decoders and the codecs return errors on malformed input instead of panicking. Offsets, counts and sizes are checked for overflow before they are used in them.
 - A refused read says where: `bytes` errors carry the absolute file offset (even where adding the origin overflows `usize`), `FieldError` names the field, and codec errors name the codec and the input offset.
+- `Levels` has public fields, so every sampling method checks the level it reads and refuses one that is missing or does not hold its size's bytes; `parallel::rows_mut` refuses a row length of zero.
 - A failed `Cursor` read or seek leaves the cursor where it was.
 - Decoding is exact rather than lenient: no format autodetection, no implicit normalization of hash inputs, no implicit coordinate-axis changes, and `f32` arithmetic in a documented order without fused multiply-add, so the same bytes give the same bits on every platform.
 - The library modules do no file, environment or process access. The one place a path is touched is `Oodle::load`, which canonicalizes the path it is given.
@@ -82,8 +83,7 @@ Each codec decodes with `Decompressor::decompress(input, expected_len)`. The exp
 - It does not read any game's archive or container format; it has no notion of Sekiro's DCX files, Frostbite's CAS or GTA V's RPF. Those readers sit on top of it.
 - It does not decrypt anything.
 - It does not ship, download or search for the Oodle library. Without the game's copy, Oodle compression is unavailable (oozextract only decodes).
-- It does not bound untrusted sizes for you: a decode allocates the expected output size up front (fallibly, as `Error::Limit`), so a size read from a hostile header should be checked first. `LZ4_MAX_RATIO` and `DEFLATE_MAX_RATIO` give the largest ratio each format can reach, and `Deflate::decompress_up_to` decodes with a maximum instead of an exact size.
-- Not everything panics-free: `sampling` indexes mip levels the caller names and trusts `Levels::levels` to hold its sizes' bytes, and `parallel::rows_mut` panics on a row length of zero. Those are caller errors, not file errors, and are documented where they apply.
+- A claimed output size is bounded by the input before anything is allocated: LZ4, deflate, zlib and LZO2A refuse a claim above `LZ4_MAX_RATIO`, `DEFLATE_MAX_RATIO` or `LZO2A_MAX_RATIO` times the input, and zstd grows its output with what the stream produces. Oodle has no proven ratio, so its decode allocates the claimed size up front (fallibly, as `Error::Limit`): bound a size read from a hostile header first. `Deflate::decompress_up_to` decodes with a maximum instead of an exact size.
 - The Oodle library, when loaded, is native code: this crate cannot vouch for what it does with a hostile stream.
 
 ## Tests

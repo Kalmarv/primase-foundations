@@ -80,8 +80,8 @@ pub struct Levels {
     pub width: u32,
     /// The base level's height in texels.
     pub height: u32,
-    /// The RGBA8 bytes of each level, base level first. The sampling methods index them by level and do not check
-    /// that each holds its size's bytes: build them with [`Levels::one`] or from level sizes you have checked.
+    /// The RGBA8 bytes of each level, base level first. The fields are public, so the sampling methods check the
+    /// level they read: one that is missing, or does not hold exactly its [`Levels::size`] in texels, is refused.
     pub levels: Vec<Vec<u8>>,
 }
 
@@ -106,15 +106,10 @@ impl Levels {
     /// addressing then applies about that texture's own origin. A level that isn't its size's whole rows is refused.
     pub fn rows_reversed(mut self) -> Result<Levels> {
         for i in 0..self.levels.len() {
-            let (w, h) = self.size(i);
-            let row = w as usize * 4;
-            let level = &mut self.levels[i];
-            if level.len() != row * h as usize {
-                return Err(Error::Invalid(format!(
-                    "sampled texture: level {i} holds {} bytes, not {h} rows of {w} texels",
-                    level.len()
-                )));
-            }
+            let row = self.level(i)?.row_bytes;
+            let Some(level) = self.levels.get_mut(i) else {
+                continue;
+            };
             *level = level.chunks_exact(row).rev().flatten().copied().collect();
         }
         Ok(self)
@@ -129,13 +124,35 @@ impl Levels {
         )
     }
 
-    /// The texel at (x, y) of level `level`, addressed by `address`.
-    pub fn texel(&self, level: usize, x: i64, y: i64, address: [Address; 2]) -> [u8; 4] {
+    /// Level `level`'s bytes if it is stored and holds exactly its size's texels, else refused.
+    fn level(&self, level: usize) -> Result<Level<'_>> {
         let (w, h) = self.size(level);
-        let (x, y) = (address[0].index(x, w), address[1].index(y, h));
-        let i = (y * w as usize + x) * 4;
-        let l = &self.levels[level];
-        [l[i], l[i + 1], l[i + 2], l[i + 3]]
+        let bytes = self.levels.get(level).ok_or_else(|| {
+            Error::Invalid(format!(
+                "sampled texture: level {level} requested, expected one of the {} stored levels",
+                self.levels.len()
+            ))
+        })?;
+        let row_bytes = (w as usize).checked_mul(4);
+        let want = row_bytes.and_then(|r| r.checked_mul(h as usize));
+        match (row_bytes, want) {
+            (Some(row_bytes), Some(want)) if want == bytes.len() && want > 0 => Ok(Level {
+                bytes,
+                row_bytes,
+                width: w,
+                height: h,
+            }),
+            _ => Err(Error::Invalid(format!(
+                "sampled texture: level {level} holds {} bytes, expected {h} rows of {w} RGBA8 texels",
+                bytes.len()
+            ))),
+        }
+    }
+
+    /// The texel at (x, y) of level `level`, addressed by `address`. A level that is not stored, or does not hold
+    /// its size's bytes, is refused.
+    pub fn texel(&self, level: usize, x: i64, y: i64, address: [Address; 2]) -> Result<[u8; 4]> {
+        self.level(level)?.texel(x, y, address)
     }
 
     /// Bilinear at `uv` of level `level`, in f64: weights `(1 - tx)(1 - ty)`, `tx (1 - ty)`, `(1 - tx) ty`, `tx ty`
@@ -148,6 +165,7 @@ impl Levels {
         transfer: Transfer,
     ) -> Result<[f64; 4]> {
         let (w, h) = self.size(level);
+        let level = self.level(level)?;
         let (x, y) = texel_coordinate([uv[0] * f64::from(w) - 0.5, uv[1] * f64::from(h) - 0.5])?;
         let (fx, fy) = (x.floor(), y.floor());
         let (tx, ty) = (x - fx, y - fy);
@@ -159,9 +177,9 @@ impl Levels {
             (0, 1, (1.0 - tx) * ty),
             (1, 1, tx * ty),
         ] {
-            let t = self.texel(level, ix + dx, iy + dy, address);
-            for c in 0..4 {
-                out[c] += wt * transfer.channel(c, t[c]);
+            let t = level.texel(ix + dx, iy + dy, address)?;
+            for (c, (o, byte)) in out.iter_mut().zip(t).enumerate() {
+                *o += wt * transfer.channel(c, byte);
             }
         }
         Ok(out)
@@ -177,15 +195,20 @@ impl Levels {
         transfer: Transfer,
     ) -> Result<[f64; 4]> {
         let (w, h) = self.size(level);
+        let level = self.level(level)?;
         let (x, y) = texel_coordinate([uv[0] * f64::from(w), uv[1] * f64::from(h)])?;
-        let t = self.texel(level, x.floor() as i64, y.floor() as i64, address);
-        Ok(std::array::from_fn(|c| transfer.channel(c, t[c])))
+        let t = level.texel(x.floor() as i64, y.floor() as i64, address)?;
+        Ok(std::array::from_fn(|c| {
+            transfer.channel(c, t.get(c).copied().unwrap_or_default())
+        }))
     }
 
-    /// Level `level` decoded once to f32 by `transfer`, for [`Decoded::bilinear`].
-    pub fn decoded(&self, level: usize, transfer: Transfer) -> Decoded {
-        let (w, h) = self.size(level);
-        let texels = self.levels[level]
+    /// Level `level` decoded once to f32 by `transfer`, for [`Decoded::bilinear`]. A level that is not stored, or does
+    /// not hold its size's bytes, is refused.
+    pub fn decoded(&self, level: usize, transfer: Transfer) -> Result<Decoded> {
+        let l = self.level(level)?;
+        let texels = l
+            .bytes
             .as_chunks::<4>()
             .0
             .iter()
@@ -196,12 +219,37 @@ impl Levels {
                 })
             })
             .collect();
-        Decoded {
-            width: w as usize,
-            height: h as usize,
+        Ok(Decoded {
+            width: l.width as usize,
+            height: l.height as usize,
             depth: 1,
             texels,
-        }
+        })
+    }
+}
+
+/// One stored level that holds exactly its size's texels (checked by [`Levels::level`]).
+struct Level<'a> {
+    bytes: &'a [u8],
+    row_bytes: usize,
+    width: u32,
+    height: u32,
+}
+
+impl Level<'_> {
+    fn texel(&self, x: i64, y: i64, address: [Address; 2]) -> Result<[u8; 4]> {
+        let (x, y) = (address[0].index(x, self.width), address[1].index(y, self.height));
+        let i = y * self.row_bytes + x * 4;
+        self.bytes
+            .get(i..)
+            .and_then(|rest| rest.first_chunk::<4>())
+            .copied()
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "sampled texture: texel ({x}, {y}) at byte {i}, expected within the level's {} bytes",
+                    self.bytes.len()
+                ))
+            })
     }
 }
 
@@ -490,7 +538,8 @@ mod tests {
     fn d3d11_subtexel_precision_truncates_to_eight_bits() {
         let d = Levels::one(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255])
             .unwrap()
-            .decoded(0, Transfer::Stored);
+            .decoded(0, Transfer::Stored)
+            .unwrap();
         let clamp = [Address::Clamp; 2];
         // texel coordinate 0.3: u = (0.3 + 0.5) / 2
         let u = 0.4f32;
@@ -529,7 +578,7 @@ mod tests {
             l.bilinear(0, [0.0, 0.5], clamp, Transfer::Stored).unwrap(),
             [0.0; 4]
         );
-        let d = l.decoded(0, Transfer::SrgbColour);
+        let d = l.decoded(0, Transfer::SrgbColour).unwrap();
         let half = d.bilinear([0.5, 0.5], wrap).unwrap();
         assert!(half.iter().all(|c| (c - 0.5).abs() < 1e-6), "{half:?}");
         // a 50% grey texel: its sRGB colour decodes to linear 0.2158...; its alpha stays 128/255
@@ -692,6 +741,7 @@ mod tests {
             assert!(l.trilinear(uv, 0.0, wrap, Transfer::Stored).is_err(), "{uv:?}");
             assert!(
                 l.decoded(0, Transfer::Stored)
+                    .unwrap()
                     .bilinear(uv.map(|v| v as f32), wrap)
                     .is_err(),
                 "{uv:?}"

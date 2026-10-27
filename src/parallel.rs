@@ -55,6 +55,17 @@ impl std::fmt::Display for Panicked {
 
 impl std::error::Error for Panicked {}
 
+/// Why [`rows_mut`] did not write every row.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RowsError {
+    /// `row_len` was zero, which divides the data into no rows; a row has at least one element.
+    #[error("rows of no length: expected a row length of at least 1")]
+    NoRowLength,
+    /// A row's work panicked.
+    #[error(transparent)]
+    Panicked(#[from] Panicked),
+}
+
 /// `f(index, item)` for every item of `items`, on up to `threads` threads; the results in item order. One thread (or
 /// one item) runs on the calling thread.
 pub fn map<T: Sync, R: Send>(
@@ -110,24 +121,30 @@ pub fn map<T: Sync, R: Send>(
     if let Some(e) = first_error {
         return Err(e);
     }
-    Ok(out
-        .into_iter()
-        .map(|v| v.expect("every item ran when none failed"))
-        .collect())
+    // no item failed, so every slot was filled; a missing one would be a bug here, reported as the item's panic
+    out.into_iter()
+        .enumerate()
+        .map(|(item, v)| {
+            v.ok_or_else(|| Panicked {
+                item,
+                message: "the item was never worked".to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// `f(row, slice)` for every `row_len`-long row of `data` (the last may be shorter), on up to `threads` threads, each
-/// row's slice written in place. One thread (or one row) runs on the calling thread.
-///
-/// # Panics
-/// If `row_len` is zero.
+/// row's slice written in place. One thread (or one row) runs on the calling thread. A `row_len` of zero is
+/// [`RowsError::NoRowLength`], whatever `data` holds.
 pub fn rows_mut<T: Send>(
     threads: Threads,
     data: &mut [T],
     row_len: usize,
     f: impl Fn(usize, &mut [T]) + Sync,
-) -> Result<(), Panicked> {
-    assert!(row_len > 0, "rows of no length");
+) -> Result<(), RowsError> {
+    if row_len == 0 {
+        return Err(RowsError::NoRowLength);
+    }
     let rows = data.len().div_ceil(row_len);
     let run =
         |i: usize, row: &mut [T]| catch_unwind(AssertUnwindSafe(|| f(i, row))).map_err(|p| panicked(i, &*p));
@@ -164,7 +181,7 @@ pub fn rows_mut<T: Send>(
             .collect()
     });
     match errors.into_iter().min_by_key(|e| e.item) {
-        Some(e) => Err(e),
+        Some(e) => Err(e.into()),
         None => Ok(()),
     }
 }
@@ -226,6 +243,9 @@ mod tests {
             assert!(e.message.contains("thirty-seven"), "{e}");
             let mut data = vec![0u8; 100];
             let e = rows_mut(threads(n), &mut data, 10, |row, _| assert!(row != 4, "row four")).unwrap_err();
+            let RowsError::Panicked(e) = e else {
+                panic!("{e:?}")
+            };
             assert_eq!((e.item, e.message.contains("row four")), (4, true), "{n} threads");
         }
     }

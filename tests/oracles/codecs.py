@@ -1,6 +1,7 @@
 """The corpus oracle set's general/codecs.tsv: game streams paired with what third-party decoders make of them.
 
-Reads a staging folder that the corpus_* example programs filled with the games' own bytes:
+Reads a staging folder that the corpus_* example programs (of the games' reader crates, not in this repository) filled
+with the games' own bytes:
   zlib-dcx/*.dcx      Sekiro's DFLT DCX envelopes (corpus_sekiro_dcx --compression DFLT): the zlib stream is cut
                       here from the documented header (big-endian: decoded size at 28, stored size at 32, the stream
                       at 76)
