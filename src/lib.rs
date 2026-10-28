@@ -86,6 +86,10 @@ pub const SOURCES: &[(&str, &[u8])] = &[
         include_bytes!("compress/oodle.rs"),
     ),
     (
+        "foundations/compress/oodle_framing.rs",
+        include_bytes!("compress/oodle_framing.rs"),
+    ),
+    (
         "foundations/compress/reference.rs",
         include_bytes!("compress/reference.rs"),
     ),

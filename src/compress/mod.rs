@@ -26,6 +26,10 @@
 //! copy of the library from a path the caller gives (an `unsafe` call, because loading a native library runs its
 //! initialization). Off Windows, [`oodle::Oodle::open`] with no path decodes with the pure-Rust oozextract crate
 //! instead, which cannot compress. On Windows there is no built-in decoder, so a path is required.
+//!
+//! The library and oozextract decode a stream without saying whether bytes were left after its last block, so
+//! [`oodle::Oodle`]'s decode does not check that. [`oodle_framing::walk`] does, by reading the stream's block and
+//! quantum headers without decoding it: a container that knows its payload's exact extent calls it first.
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use std::io::Write;
@@ -34,6 +38,7 @@ mod lzo2a;
 pub use lzo2a::Lzo2a;
 #[allow(unsafe_code)]
 pub mod oodle;
+pub mod oodle_framing;
 #[cfg(any(feature = "reference-decoder", not(windows)))]
 pub mod reference;
 

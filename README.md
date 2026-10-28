@@ -66,7 +66,9 @@ Each codec decodes with `Decompressor::decompress(input, expected_len)`. The exp
 | LZO2A | `Lzo2a` | yes | no |
 | Oodle | `oodle::Oodle` | yes | Kraken, with the game's library only |
 
-**Oodle.** The Oodle library is not shipped with this crate and is not downloaded. Point `Oodle::load` at the copy the game itself ships (`oo2core_5_win64.dll`, `oo2core_6_win64.dll` or `oo2core_9_win64.dll`, for the `Version` that matches); it loads exactly that path and is `unsafe`, because loading a native library runs its initialization code. Off Windows, `Oodle::open(None, version)` decodes with the pure-Rust [oozextract](https://github.com/lvlvllvlvllvlvl/oozextract) instead, which refuses a stream it cannot decode and cannot compress. On Windows there is no built-in decoder, so a library path is required.
+**Oodle.** `oodle_framing::walk` reads an Oodle stream's block and quantum headers without decoding it and checks that they end exactly at the end of the payload and the decoded size, because the library's one-shot decode does not say whether bytes were left over. The library and oozextract decode a stream with a byte added after it; a container that knows its payload's exact extent calls `walk` first.
+
+The Oodle library is not shipped with this crate and is not downloaded. Point `Oodle::load` at the copy the game itself ships (`oo2core_5_win64.dll`, `oo2core_6_win64.dll` or `oo2core_9_win64.dll`, for the `Version` that matches); it loads exactly that path and is `unsafe`, because loading a native library runs its initialization code. Off Windows, `Oodle::open(None, version)` decodes with the pure-Rust [oozextract](https://github.com/lvlvllvlvllvlvl/oozextract) instead, which refuses a stream it cannot decode and cannot compress. On Windows there is no built-in decoder, so a library path is required.
 
 ## What it guarantees
 

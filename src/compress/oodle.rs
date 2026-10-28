@@ -430,6 +430,58 @@ mod tests {
         Ok(())
     }
 
+    /// The walker against the library's own encoder: every stream it makes for a compressor number whose block headers
+    /// the walker knows, at sizes around the block and quantum spans, walks to exactly its last byte with the blocks
+    /// the size implies, and the walker refuses the same stream a byte longer and a byte shorter. What the library does
+    /// with the longer stream (the gap the walker closes) is printed per compressor number, not asserted.
+    #[test]
+    fn framing_walks_the_librarys_streams() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use crate::compress::oodle_framing::{BLOCK_SIZE, DecoderType, walk};
+        let Some(path) = tool(Tool::Oodle6) else {
+            return Ok(());
+        };
+        // SAFETY: gate configuration explicitly identifies the user's trusted game DLL.
+        let dll = unsafe { Oodle::load(path, Version::V6)? };
+        let mut walked = 0;
+        // 14 and 15 are no compressor of this library: asking it for a stream of a few bytes traps
+        for id in 0..=13 {
+            let (mut streams, mut library_takes, mut library_takes_extra) = (0, 0, 0);
+            let mut decoders = std::collections::BTreeSet::new();
+            for n in [1, 100, 16384, 16385, 65536, 262143, 262144, 262145, 600000] {
+                let src: Vec<u8> = (0..n).map(|i| ((i * 17 + i / 256) % 251) as u8).collect();
+                let Ok(stream) = dll.compress_as(Codec(id), &src) else {
+                    continue;
+                };
+                if stream.len() < 2 || DecoderType::from_id(stream[1] & 0x7F).is_none() {
+                    continue;
+                }
+                let item = format!("compressor {id}, {n} bytes");
+                let framing = walk(&stream, n)?;
+                assert_eq!(framing.block_count(), n.div_ceil(BLOCK_SIZE), "{item}");
+                assert_eq!(framing.restart_bits(), 1, "{item}: the first block restarts");
+                decoders.extend(framing.decoders().iter().map(|d| d.id()));
+                let mut over = stream.clone();
+                over.push(0);
+                assert!(walk(&over, n).is_err(), "{item}: one byte over");
+                assert!(
+                    walk(&stream[..stream.len() - 1], n).is_err(),
+                    "{item}: one byte short"
+                );
+                streams += 1;
+                library_takes += usize::from(dll.decompress(&stream, n).is_ok_and(|b| b == src));
+                library_takes_extra += usize::from(dll.decompress(&over, n).is_ok_and(|b| b == src));
+            }
+            if streams > 0 {
+                println!(
+                    "compressor {id} (decoder types {decoders:?}): {streams} streams walked exactly; the library decodes {library_takes} of them and {library_takes_extra} with a byte added"
+                );
+                walked += streams;
+            }
+        }
+        assert!(walked > 0);
+        Ok(())
+    }
+
     /// Two independent 256 KiB Kraken quanta, concatenated: oozextract up to 0.5.5 kept the first quantum's output
     /// base after the second's decoder restart and refused (or panicked on) the whole stream; 0.5.6 decodes it, and
     /// both decoders must agree.
