@@ -104,9 +104,20 @@ pub(crate) fn check_claim(
     Ok(())
 }
 /// How many input bytes the decompressor has consumed (a count past `usize` is beyond any input).
-fn total_in(d: &flate2::Decompress) -> usize {
+fn total_in(d: &zlib_rs::Inflate) -> usize {
     usize::try_from(d.total_in()).unwrap_or(usize::MAX)
 }
+/// What the inflater says of a stream it refused, in the words this module has always used for it.
+fn inflate_error(e: zlib_rs::InflateError) -> &'static str {
+    match e {
+        zlib_rs::InflateError::NeedDict { .. } => "requires a dictionary",
+        zlib_rs::InflateError::StreamError
+        | zlib_rs::InflateError::DataError
+        | zlib_rs::InflateError::MemError => "deflate decompression error",
+    }
+}
+/// The window an inflater is made with: the largest deflate has, which every stream fits.
+const WINDOW_BITS: u8 = 15;
 /// The input offset a decoder reached when `left` bytes remained.
 fn consumed(input: &[u8], left: usize) -> usize {
     input.len().saturating_sub(left)
@@ -259,11 +270,11 @@ pub struct Zlib;
 pub struct ZlibUnterminated;
 fn inflate(input: &[u8], expected: usize, zlib: bool, incomplete: bool) -> Result<Vec<u8>> {
     check_claim("deflate/zlib", input.len(), expected, DEFLATE_MAX_RATIO)?;
-    let mut d = flate2::Decompress::new(zlib);
+    let mut d = zlib_rs::Inflate::new(zlib, WINDOW_BITS);
     let mut out = buffer(expected.checked_add(1).ok_or(Error::Limit)?)?;
     let status = d
-        .decompress(input, &mut out, flate2::FlushDecompress::None)
-        .map_err(|e| invalid("deflate/zlib", total_in(&d), e))?;
+        .decompress(input, &mut out, zlib_rs::InflateFlush::NoFlush)
+        .map_err(|e| invalid("deflate/zlib", total_in(&d), inflate_error(e)))?;
     check_size(usize::try_from(d.total_out()).unwrap_or(usize::MAX), expected)?;
     if total_in(&d) != input.len() {
         return Err(invalid(
@@ -272,7 +283,7 @@ fn inflate(input: &[u8], expected: usize, zlib: bool, incomplete: bool) -> Resul
             "trailing input: expected the stream to end here",
         ));
     }
-    if status != flate2::Status::StreamEnd && !incomplete {
+    if status != zlib_rs::Status::StreamEnd && !incomplete {
         return Err(invalid("deflate/zlib", input.len(), "missing stream end"));
     }
     // Even incomplete empty zlib needs a valid two-byte header.
@@ -301,7 +312,7 @@ impl Deflate {
     /// taken from an untrusted header costs no memory by itself. Requires the final block marker and exact input
     /// consumption; more than `max` bytes of output is [`Error::Size`] (`actual` is then `max + 1`).
     pub fn decompress_up_to(&self, input: &[u8], max: usize) -> Result<Vec<u8>> {
-        let mut d = flate2::Decompress::new(false);
+        let mut d = zlib_rs::Inflate::new(false, WINDOW_BITS);
         let mut out: Vec<u8> = Vec::new();
         loop {
             if out.len() == out.capacity() {
@@ -323,16 +334,23 @@ impl Deflate {
             let taken = total_in(&d);
             let rest = input.get(taken..).unwrap_or_default();
             let before = (d.total_in(), d.total_out());
-            let status = d
-                .decompress_vec(rest, &mut out, flate2::FlushDecompress::None)
-                .map_err(|e| invalid("deflate", taken, e))?;
+            // the inflater writes into initialised bytes: the room is zero-filled, and cut back to what it produced
+            let at = out.len();
+            out.resize(out.capacity(), 0);
+            let result = match out.get_mut(at..) {
+                Some(room) => d.decompress(rest, room, zlib_rs::InflateFlush::NoFlush),
+                None => Ok(zlib_rs::Status::BufError),
+            };
+            let produced = usize::try_from(d.total_out().saturating_sub(before.1)).unwrap_or(usize::MAX);
+            out.truncate(at.saturating_add(produced));
+            let status = result.map_err(|e| invalid("deflate", taken, inflate_error(e)))?;
             if out.len() > max {
                 return Err(Error::Size {
                     expected: max,
                     actual: out.len(),
                 });
             }
-            if status == flate2::Status::StreamEnd {
+            if status == zlib_rs::Status::StreamEnd {
                 break;
             }
             if (d.total_in(), d.total_out()) == before && out.len() < out.capacity() {
