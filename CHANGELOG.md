@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `oodle::Level` and `Oodle::compress_at`: compress at a named level (a DCX header's level byte); `compress_as`
+  stays at level 4.
+
 - `Deflate`, `Zlib` and `ZlibUnterminated` decode with the `zlib-rs` crate (a direct dependency, used through its own
   streaming `Inflate`) instead of flate2's miniz_oxide backend: the same bytes and the same refusals (the codec tests
   and the real-data corpus hold it), faster. Compression stays on flate2 with miniz_oxide, so every compressed byte

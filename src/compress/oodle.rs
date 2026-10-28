@@ -51,8 +51,8 @@ enum Capacity {
     Modern(unsafe extern "C" fn(i32, isize) -> isize),
 }
 /// Oodle 5/6/9 on 64-bit Windows (version-specific capacity-query ABI). Owns the library for
-/// the entire lifetime of the copied function pointers. Compression is Kraken,
-/// level 4.
+/// the entire lifetime of the copied function pointers. Compression is Kraken at level 4 unless
+/// [`Oodle::compress_at`] names another codec and level.
 #[derive(Debug)]
 struct Library {
     _library: libloading::Library,
@@ -197,10 +197,36 @@ impl Codec {
     pub const KRAKEN: Codec = Codec(8);
 }
 
+/// An Oodle compression level (`OodleLZ_CompressionLevel`): -4..=-1 the HyperFast levels, 0 none (stored blocks),
+/// 1..=3 SuperFast, VeryFast and Fast, 4 Normal, 5..=9 Optimal1 to Optimal5. A container that records the level it
+/// was written with (a DCX `DFLT`/`KRAK` header's level byte) names one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Level(i32);
+
+impl Level {
+    /// Normal (4): what [`Oodle::compress_as`] and [`Compressor::compress`] use.
+    pub const NORMAL: Level = Level(4);
+
+    /// The level `n`, or `None` outside -4..=9.
+    pub fn new(n: i32) -> Option<Level> {
+        (-4..=9).contains(&n).then_some(Level(n))
+    }
+
+    /// The level's number as the library takes it.
+    pub fn get(self) -> i32 {
+        self.0
+    }
+}
+
 impl Oodle {
-    /// Compress with `codec` at level 4, through the game's library: the portable decoder has no encoder, and the
-    /// tests need streams of every codec the decoders read.
+    /// Compress with `codec` at level 4 ([`Level::NORMAL`]), through the game's library: the portable decoder has no
+    /// encoder, and the tests need streams of every codec the decoders read.
     pub fn compress_as(&self, codec: Codec, input: &[u8]) -> Result<Vec<u8>> {
+        self.compress_at(codec, Level::NORMAL, input)
+    }
+
+    /// Compress with `codec` at `level`, through the game's library (see [`Oodle::compress_as`]).
+    pub fn compress_at(&self, codec: Codec, level: Level, input: &[u8]) -> Result<Vec<u8>> {
         if input.is_empty() {
             return Ok(Vec::new());
         }
@@ -238,7 +264,7 @@ impl Oodle {
                 input.as_ptr(),
                 n,
                 out.as_mut_ptr(),
-                4,
+                level.get(),
                 std::ptr::null(),
                 std::ptr::null(),
                 std::ptr::null_mut(),
@@ -273,6 +299,46 @@ mod tests {
     use super::*;
     use crate::inputs::{Tool, tool};
     use primase_testdata::gate::{GateReport, Tolerance};
+    /// The library's levels are -4..=9 (`OodleLZ_CompressionLevel`); nothing outside is a level.
+    #[test]
+    fn levels_are_the_library_range() {
+        assert_eq!(Level::new(-5), None);
+        assert_eq!(Level::new(10), None);
+        assert_eq!(Level::new(-4).map(Level::get), Some(-4));
+        assert_eq!(Level::new(9).map(Level::get), Some(9));
+        assert_eq!(Level::new(4), Some(Level::NORMAL));
+    }
+    /// Every level of the library writes a Kraken stream that it and oozextract decode back to the input (needs the
+    /// game's library: Oodle 9).
+    #[test]
+    fn every_level_round_trips() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let Some(path) = tool(Tool::Oodle9) else {
+            return Ok(());
+        };
+        // SAFETY: gate configuration explicitly identifies the user's trusted game DLL.
+        let dll = unsafe { Oodle::load(path, Version::V9)? };
+        let mut report = GateReport::new(Tool::Oodle9.key(), Tolerance::Exact);
+        let src: Vec<u8> = (0..300_000u32)
+            .map(|i| ((i * 17 + i / 256) % 251) as u8)
+            .collect();
+        for n in -4..=9 {
+            let level = Level::new(n).ok_or("level in range")?;
+            let compressed = dll.compress_at(Codec::KRAKEN, level, &src)?;
+            report.compare_bytes(
+                format!("dll/level {n}"),
+                &dll.decompress(&compressed, src.len())?,
+                &src,
+            );
+            report.compare_bytes(
+                format!("ooz/level {n}"),
+                &crate::compress::reference::decode(&compressed, src.len())?,
+                &src,
+            );
+        }
+        println!("{report}");
+        report.assert_passed();
+        Ok(())
+    }
     /// Installed DLL oracle versus independently implemented oozextract; tests
     /// synthetic Kraken compression for all three ABI versions when configured.
     #[test]
