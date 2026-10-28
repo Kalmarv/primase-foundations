@@ -7,6 +7,7 @@
   and the real-data corpus hold it), faster. Compression stays on flate2 with miniz_oxide, so every compressed byte
   this crate writes is unchanged; flate2's backend is not switched, which would also have switched the other crates
   that depend on flate2 in the same build.
+- `bytes::View`'s small reads (`slice`, `array`, `u8`, the integer and float reads) and `checked_span` are `#[inline]`.
 
 ## 0.2.1 (2026-10-27)
 

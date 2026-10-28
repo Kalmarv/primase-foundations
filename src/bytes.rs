@@ -141,6 +141,7 @@ macro_rules! numbers {
         impl View<'_> {
             $(
                 #[doc = concat!("The `", stringify!($t), "` at `offset`, in byte order `e`.")]
+                #[inline]
                 pub fn $name(&self, offset: usize, e: Endian) -> Result<$t, BoundsError> {
                     let b = self.array(offset)?;
                     Ok(match e {
@@ -153,6 +154,7 @@ macro_rules! numbers {
         impl Cursor<'_> {
             $(
                 #[doc = concat!("The next `", stringify!($t), "`, in byte order `e`.")]
+                #[inline]
                 pub fn $name(&mut self, e: Endian) -> Result<$t, BoundsError> {
                     let b = self.array()?;
                     Ok(match e {
@@ -169,6 +171,7 @@ numbers!(u16: u16, i16: i16, u32: u32, i32: i32, u64: u64, i64: i64, f32: f32, f
 /// The byte range of `count` entries of `stride` bytes starting at `offset` in a view of `total` bytes: the
 /// multiplication, the addition and the bound are each checked, in that order. A zero stride makes every count fit,
 /// so it does not by itself make allocating or processing `count` records safe; that is the caller's policy.
+#[inline]
 pub fn checked_span(
     offset: usize,
     count: usize,
@@ -202,18 +205,22 @@ pub struct View<'a> {
 }
 impl<'a> View<'a> {
     /// A view of `data`, whose first byte is offset 0 of the file.
+    #[inline]
     pub fn new(data: &'a [u8]) -> Self {
         Self::with_origin(data, 0)
     }
     /// `origin` is the source byte offset of `data[0]`; slicing offsets remain local.
+    #[inline]
     pub fn with_origin(data: &'a [u8], origin: usize) -> Self {
         Self { data, origin }
     }
     /// The range of `length` bytes at `offset`, if the view holds it.
+    #[inline]
     fn locate(&self, offset: usize, length: usize) -> Result<Range<usize>, BoundsError> {
         checked_span(offset, length, 1, self.data.len()).map_err(|e| e.with_origin(self.origin))
     }
     /// The bytes of a range [`View::locate`] returned.
+    #[inline]
     fn bytes_in(&self, span: Range<usize>) -> Result<&'a [u8], BoundsError> {
         let (offset, length) = (span.start, span.len());
         self.data.get(span).ok_or(BoundsError::OutOfBounds {
@@ -224,20 +231,24 @@ impl<'a> View<'a> {
         })
     }
     /// The `length` bytes at `offset`.
+    #[inline]
     pub fn slice(&self, offset: usize, length: usize) -> Result<&'a [u8], BoundsError> {
         self.bytes_in(self.locate(offset, length)?)
     }
     /// The `N` bytes at `offset`.
+    #[inline]
     pub fn array<const N: usize>(&self, offset: usize) -> Result<[u8; N], BoundsError> {
         let mut bytes = [0; N];
         bytes.copy_from_slice(self.slice(offset, N)?);
         Ok(bytes)
     }
     /// The byte at `offset`.
+    #[inline]
     pub fn u8(&self, offset: usize) -> Result<u8, BoundsError> {
         self.array::<1>(offset).map(|[b]| b)
     }
     /// The byte at `offset`, signed.
+    #[inline]
     pub fn i8(&self, offset: usize) -> Result<i8, BoundsError> {
         self.array::<1>(offset).map(i8::from_le_bytes)
     }
@@ -252,10 +263,12 @@ pub struct Cursor<'a> {
 }
 impl<'a> Cursor<'a> {
     /// A cursor at the start of `data`, whose first byte is offset 0 of the file.
+    #[inline]
     pub fn new(data: &'a [u8]) -> Self {
         Self::with_origin(data, 0)
     }
     /// A cursor at the start of `data`, whose first byte is offset `origin` of the file.
+    #[inline]
     pub fn with_origin(data: &'a [u8], origin: usize) -> Self {
         Self {
             view: View::with_origin(data, origin),
