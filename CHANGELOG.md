@@ -16,7 +16,9 @@
   streaming `Inflate`) instead of flate2's miniz_oxide backend: the same bytes and the same refusals (the codec tests
   and the real-data corpus hold it), faster. Compression stays on flate2 with miniz_oxide, so every compressed byte
   this crate writes is unchanged; flate2's backend is not switched, which would also have switched the other crates
-  that depend on flate2 in the same build.
+  that depend on flate2 in the same build. A raw DEFLATE stream's window starts zero-filled, as miniz_oxide's did, so
+  a stream that copies from before its first byte reads zeros there instead of being refused (GTA V Enhanced stores
+  one; zlib refuses it as "invalid distance too far back"); zlib streams still start with an empty window.
 - `bytes::View`'s small reads (`slice`, `array`, `u8`, the integer and float reads) and `checked_span` are `#[inline]`.
 
 ## 0.2.1 (2026-10-27)

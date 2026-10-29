@@ -116,6 +116,28 @@ fn zstd_one_exact_frame() -> Result<()> {
     Ok(())
 }
 
+/// A raw stream that copies from before its first byte reads zeros there: twelve zeros and "window", compressed by
+/// Python's zlib 1.3.1 against a 32 KiB zero dictionary (`compressobj(9, DEFLATED, -15, zdict=bytes(32768))`), which
+/// zlib without that dictionary refuses as "invalid distance too far back". A zlib stream's window starts empty.
+#[test]
+fn a_raw_stream_reads_zeros_before_its_start() -> Result<()> {
+    let stream = [67, 6, 229, 153, 121, 41, 249, 229, 0];
+    let mut want = vec![0u8; 12];
+    want.extend_from_slice(b"window");
+    assert_eq!(Deflate.decompress(&stream, want.len())?, want);
+    assert_eq!(Deflate.decompress_up_to(&stream, usize::MAX)?, want);
+    // the same stream behind a zlib header (78 DA) and its Adler-32 copies from an empty window: refused
+    let mut zlib = vec![0x78, 0xDA];
+    zlib.extend_from_slice(&stream);
+    let adler = want.iter().fold((1u32, 0u32), |(a, b), &x| {
+        let a = (a + u32::from(x)) % 65521;
+        (a, (b + a) % 65521)
+    });
+    zlib.extend_from_slice(&(adler.1 << 16 | adler.0).to_be_bytes());
+    assert!(Zlib.decompress(&zlib, want.len()).is_err());
+    Ok(())
+}
+
 /// A stream of unstated size inflates to what it holds, memory following the output and not the bound; more than the
 /// bound, a missing end, trailing input and a damaged stream are refused.
 #[test]

@@ -118,6 +118,22 @@ fn inflate_error(e: zlib_rs::InflateError) -> &'static str {
 }
 /// The window an inflater is made with: the largest deflate has, which every stream fits.
 const WINDOW_BITS: u8 = 15;
+/// What a raw DEFLATE stream's window holds before its first byte: zeros. Some streams copy from before their start
+/// (GTA V Enhanced stores one: `x64a.rpf\textures\parachute_decals.ytd`, whose matches reach back past byte 0), which
+/// a strict inflater refuses as "invalid distance too far back"; read against a zero-filled window that stream decodes
+/// to exactly what flate2's miniz_oxide made of it, and to what zlib 1.3.1 makes of it with this window as its
+/// dictionary. A stream that copies only from its own output decodes the same with or without the window.
+static ZERO_WINDOW: [u8; 1 << WINDOW_BITS] = [0; 1 << WINDOW_BITS];
+/// An inflater for a raw DEFLATE stream (`zlib` false: its window starts as [`ZERO_WINDOW`]) or a zlib one (`zlib`
+/// true: a zlib stream names any dictionary it needs in its header, so its window starts empty, as RFC 1950 has it).
+fn inflater(zlib: bool) -> Result<zlib_rs::Inflate> {
+    let mut d = zlib_rs::Inflate::new(zlib, WINDOW_BITS);
+    if !zlib {
+        d.set_dictionary(&ZERO_WINDOW)
+            .map_err(|e| invalid("deflate", 0, inflate_error(e)))?;
+    }
+    Ok(d)
+}
 /// The input offset a decoder reached when `left` bytes remained.
 fn consumed(input: &[u8], left: usize) -> usize {
     input.len().saturating_sub(left)
@@ -270,7 +286,7 @@ pub struct Zlib;
 pub struct ZlibUnterminated;
 fn inflate(input: &[u8], expected: usize, zlib: bool, incomplete: bool) -> Result<Vec<u8>> {
     check_claim("deflate/zlib", input.len(), expected, DEFLATE_MAX_RATIO)?;
-    let mut d = zlib_rs::Inflate::new(zlib, WINDOW_BITS);
+    let mut d = inflater(zlib)?;
     let mut out = buffer(expected.checked_add(1).ok_or(Error::Limit)?)?;
     let status = d
         .decompress(input, &mut out, zlib_rs::InflateFlush::NoFlush)
@@ -312,7 +328,7 @@ impl Deflate {
     /// taken from an untrusted header costs no memory by itself. Requires the final block marker and exact input
     /// consumption; more than `max` bytes of output is [`Error::Size`] (`actual` is then `max + 1`).
     pub fn decompress_up_to(&self, input: &[u8], max: usize) -> Result<Vec<u8>> {
-        let mut d = zlib_rs::Inflate::new(false, WINDOW_BITS);
+        let mut d = inflater(false)?;
         let mut out: Vec<u8> = Vec::new();
         loop {
             if out.len() == out.capacity() {
