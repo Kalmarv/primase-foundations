@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-29)
 
 - `oodle::Level` and `Oodle::compress_at`: compress at a named level (a DCX header's level byte); `compress_as`
   stays at level 4.
