@@ -54,7 +54,7 @@ libloading = { version = "=0.9.0", default-features = false, features = ["std"] 
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 oozextract = { version = "=0.5.7", default-features = false, features = ["verbose_errors"] }
 primase-foundations = { path = "." }
-primase-testdata = { version = "0.1.2", git = "https://github.com/Kalmarv/primase-testdata", rev = "4fce41eecd06019bc44310de919313119cda4c34" }
+primase-testdata = { version = "0.1.3", git = "https://github.com/Kalmarv/primase-testdata", rev = "fcb06c6dd160a2fc4ee6720c5eb95880bbad6410" }
 ruzstd = { version = "=0.7.3", default-features = false, features = ["std", "hash"] }
 zlib-rs = { version = "=0.6.8", default-features = false, features = ["std"] }
 thiserror = { version = "=2.0.21", default-features = false, features = ["std"] }
