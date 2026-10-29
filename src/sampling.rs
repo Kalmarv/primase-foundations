@@ -1,5 +1,6 @@
 //! Sampling a decoded texture: each policy the caller's, stated. Bilinear filtering between texel centres (a texel
-//! `i` covering `[i, i + 1)`, `uv` scaled by the level's size, minus a half), each axis's address mode, the colour's
+//! `i` covering `[i, i + 1)`, `uv` scaled by the level's size, minus a half), each axis's address mode (a border reads
+//! the colour the caller states, [`Addressing`]), the colour's
 //! transfer before filtering, at a level the caller picks. Two precisions, each a fixed order of operations: f64
 //! ([`Levels::bilinear`]) and f32 over texels decoded once ([`Decoded::bilinear`]). The texel a coordinate falls in
 //! ([`Levels::point`], [`Decoded::point`]). A level of detail from a sample's footprint ([`footprint_lod`]), and the
@@ -22,8 +23,7 @@ pub enum Error {
 /// A result with this module's [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Where a texel index outside the texture reads (the address modes of Direct3D's `D3D11_TEXTURE_ADDRESS_MODE`,
-/// except border).
+/// Where a texel index outside the texture reads (the address modes of Direct3D's `D3D11_TEXTURE_ADDRESS_MODE`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Address {
     /// Repeats the texture.
@@ -34,10 +34,13 @@ pub enum Address {
     Mirror,
     /// Mirrored once about the origin, then the edge texel.
     MirrorOnce,
+    /// No texel: an index outside the texture reads the border colour ([`Addressing::border`]).
+    Border,
 }
 
 impl Address {
-    fn index(self, i: i64, size: u32) -> usize {
+    /// The texel index `i` reads along an axis of `size` texels, or none where it is outside a border axis.
+    fn index(self, i: i64, size: u32) -> Option<usize> {
         let n = i64::from(size.max(1));
         let (last, period) = (n.saturating_sub(1), n.saturating_mul(2));
         let at = match self {
@@ -54,9 +57,64 @@ impl Address {
             }
             // mirrored once about the origin (-1 reads 0, -2 reads 1, ...), then the edge texel
             Address::MirrorOnce => (if i < 0 { (-1i64).saturating_sub(i) } else { i }).clamp(0, last),
+            Address::Border if (0..n).contains(&i) => i,
+            Address::Border => return None,
         };
         // every arm lands in 0..n, and n is a u32
-        usize::try_from(at).unwrap_or_default()
+        Some(usize::try_from(at).unwrap_or_default())
+    }
+}
+
+/// How a sample addresses a texture: each axis's [`Address`], and the colour an index outside the texture reads along
+/// a [`Address::Border`] axis. An array of addresses is addressing with no border colour (`[Address::Clamp; 2].into()`),
+/// so every filter takes either.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Addressing<const N: usize> {
+    /// The address mode of each axis (u, v, then w).
+    pub axes: [Address; N],
+    /// The colour (red, green, blue, alpha) a border reads: a value of the filtered domain, taken as it is (the
+    /// [`Transfer`] decodes stored texels, not this). A sample with a border axis and no colour is refused.
+    pub border: Option<[f32; 4]>,
+}
+
+impl<const N: usize> From<[Address; N]> for Addressing<N> {
+    fn from(axes: [Address; N]) -> Addressing<N> {
+        Addressing { axes, border: None }
+    }
+}
+
+impl<const N: usize> Addressing<N> {
+    /// `axes`, a border reading `border`.
+    pub fn bordered(axes: [Address; N], border: [f32; 4]) -> Addressing<N> {
+        Addressing {
+            axes,
+            border: Some(border),
+        }
+    }
+
+    /// The colour a border reads, checked once per sample: a border axis with no colour, or a colour that isn't finite,
+    /// is refused. Zero where no axis is a border (no index then reads it).
+    fn border_colour(&self) -> Result<[f32; 4]> {
+        match self.border {
+            Some(c) if c.iter().any(|v| !v.is_finite()) => Err(Error::Invalid(format!(
+                "sampled texture: border colour {c:?} is not finite"
+            ))),
+            Some(c) => Ok(c),
+            None if self.axes.contains(&Address::Border) => Err(Error::Invalid(
+                "sampled texture: border addressing with no border colour".into(),
+            )),
+            None => Ok([0.0; 4]),
+        }
+    }
+
+    /// The texel indices `at` reads in a texture of `size` texels along each axis, or none where one is outside a
+    /// border axis.
+    fn indices(&self, at: [i64; N], size: [u32; N]) -> Option<[usize; N]> {
+        let mut out = [0usize; N];
+        for (o, ((a, i), n)) in out.iter_mut().zip(self.axes.iter().zip(at).zip(size)) {
+            *o = a.index(i, n)?;
+        }
+        Some(out)
     }
 }
 
@@ -157,20 +215,29 @@ impl Levels {
     }
 
     /// The texel at (x, y) of level `level`, addressed by `address`. A level that is not stored, or does not hold
-    /// its size's bytes, is refused.
+    /// its size's bytes, is refused, as is a coordinate outside a [`Address::Border`] axis (it reads no stored texel).
     pub fn texel(&self, level: usize, x: i64, y: i64, address: [Address; 2]) -> Result<[u8; 4]> {
-        self.level(level)?.texel(x, y, address)
+        self.level(level)?
+            .texel(x, y, &Addressing::from(address))?
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "sampled texture: texel ({x}, {y}) is outside a border axis"
+                ))
+            })
     }
 
     /// Bilinear at `uv` of level `level`, in f64: weights `(1 - tx)(1 - ty)`, `tx (1 - ty)`, `(1 - tx) ty`, `tx ty`
-    /// summed in that order. A coordinate that isn't finite or past an i32's range is refused.
+    /// summed in that order, a texel outside a border axis the border colour. A coordinate that isn't finite or past an
+    /// i32's range is refused, as is a border axis with no colour ([`Addressing::border`]).
     pub fn bilinear(
         &self,
         level: usize,
         uv: [f64; 2],
-        address: [Address; 2],
+        address: impl Into<Addressing<2>>,
         transfer: Transfer,
     ) -> Result<[f64; 4]> {
+        let address: Addressing<2> = address.into();
+        let border = address.border_colour()?;
         let (w, h) = self.size(level);
         let level = self.level(level)?;
         let (x, y) = texel_coordinate([uv[0] * f64::from(w) - 0.5, uv[1] * f64::from(h) - 0.5])?;
@@ -184,30 +251,31 @@ impl Levels {
             (0, 1, (1.0 - tx) * ty),
             (1, 1, tx * ty),
         ] {
-            let t = level.texel(ix.saturating_add(dx), iy.saturating_add(dy), address)?;
-            for (c, (o, byte)) in out.iter_mut().zip(t).enumerate() {
-                *o += wt * transfer.channel(c, byte);
+            let t = level.texel(ix.saturating_add(dx), iy.saturating_add(dy), &address)?;
+            for (c, o) in out.iter_mut().enumerate() {
+                *o += wt * texel_channel(t, c, transfer, border);
             }
         }
         Ok(out)
     }
 
     /// The texel of level `level` that `uv` falls in (texel `i` covering `[i, i + 1)` after scaling by the level's
-    /// size), in f64: point filtering. A coordinate that isn't finite or past an i32's range is refused.
+    /// size), in f64: point filtering; outside a border axis, the border colour. A coordinate that isn't finite or past
+    /// an i32's range is refused, as is a border axis with no colour.
     pub fn point(
         &self,
         level: usize,
         uv: [f64; 2],
-        address: [Address; 2],
+        address: impl Into<Addressing<2>>,
         transfer: Transfer,
     ) -> Result<[f64; 4]> {
+        let address: Addressing<2> = address.into();
+        let border = address.border_colour()?;
         let (w, h) = self.size(level);
         let level = self.level(level)?;
         let (x, y) = texel_coordinate([uv[0] * f64::from(w), uv[1] * f64::from(h)])?;
-        let t = level.texel(floor_f64(x), floor_f64(y), address)?;
-        Ok(std::array::from_fn(|c| {
-            transfer.channel(c, t.get(c).copied().unwrap_or_default())
-        }))
+        let t = level.texel(floor_f64(x), floor_f64(y), &address)?;
+        Ok(std::array::from_fn(|c| texel_channel(t, c, transfer, border)))
     }
 
     /// Level `level` decoded once to f32 by `transfer`, for [`Decoded::bilinear`]. A level that is not stored, or does
@@ -247,14 +315,26 @@ struct Level<'a> {
     height: u32,
 }
 
+/// Channel `c` of a stored texel through `transfer`, or of the border colour where the texel is outside a border axis.
+fn texel_channel(texel: Option<[u8; 4]>, c: usize, transfer: Transfer, border: [f32; 4]) -> f64 {
+    match texel {
+        Some(t) => transfer.channel(c, t.get(c).copied().unwrap_or_default()),
+        None => f64::from(border.get(c).copied().unwrap_or_default()),
+    }
+}
+
 impl Level<'_> {
-    fn texel(&self, x: i64, y: i64, address: [Address; 2]) -> Result<[u8; 4]> {
-        let (x, y) = (address[0].index(x, self.width), address[1].index(y, self.height));
+    /// The stored texel at addressed (x, y), or none where it is outside a border axis.
+    fn texel(&self, x: i64, y: i64, address: &Addressing<2>) -> Result<Option<[u8; 4]>> {
+        let Some([x, y]) = address.indices([x, y], [self.width, self.height]) else {
+            return Ok(None);
+        };
         let i = y
             .checked_mul(self.row_bytes)
             .and_then(|row| row.checked_add(x.checked_mul(4)?));
         i.and_then(|i| self.bytes.get(i..)?.first_chunk::<4>())
             .copied()
+            .map(Some)
             .ok_or_else(|| {
                 Error::Invalid(format!(
                     "sampled texture: texel ({x}, {y}) outside the level's {} bytes",
@@ -285,14 +365,15 @@ pub fn footprint_lod(width: u32, height: u32, gradients: [[f64; 2]; 2], bias: f6
 impl Levels {
     /// Trilinear at `uv`: the level of detail `lod` clamped to the stored levels, the bilinear values
     /// ([`Levels::bilinear`]) of the level below it and the next mixed by its fraction (`a + (b - a) f`); a level
-    /// of detail that isn't a number, or a coordinate [`Levels::bilinear`] refuses, is refused.
+    /// of detail that isn't a number, or a coordinate or addressing [`Levels::bilinear`] refuses, is refused.
     pub fn trilinear(
         &self,
         uv: [f64; 2],
         lod: f64,
-        address: [Address; 2],
+        address: impl Into<Addressing<2>>,
         transfer: Transfer,
     ) -> Result<[f64; 4]> {
+        let address: Addressing<2> = address.into();
         if lod.is_nan() {
             return Err(Error::Invalid(
                 "sampled texture: a level of detail that isn't a number".into(),
@@ -459,26 +540,37 @@ impl Decoded {
     }
 
     /// Bilinear at `uv`, in f32 (the coordinate, the weights `(1 - t)` and `t` per axis, and the sum over the four
-    /// texels row by row); a coordinate that isn't finite or past an i32's range is refused.
-    pub fn bilinear(&self, uv: [f32; 2], address: [Address; 2]) -> Result<[f32; 4]> {
+    /// texels row by row), a texel outside a border axis the border colour; a coordinate that isn't finite or past an
+    /// i32's range is refused, as is a border axis with no colour.
+    pub fn bilinear(&self, uv: [f32; 2], address: impl Into<Addressing<2>>) -> Result<[f32; 4]> {
         self.bilinear_at(uv, address, Subtexel::Exact)
     }
     /// [`Decoded::bilinear`] with the texel coordinate resolved to `subtexel` precision before the weights are taken.
-    pub fn bilinear_at(&self, uv: [f32; 2], address: [Address; 2], subtexel: Subtexel) -> Result<[f32; 4]> {
+    pub fn bilinear_at(
+        &self,
+        uv: [f32; 2],
+        address: impl Into<Addressing<2>>,
+        subtexel: Subtexel,
+    ) -> Result<[f32; 4]> {
+        let address: Addressing<2> = address.into();
+        let border = address.border_colour()?;
         self.plane()?;
         let [u, v] = uv;
         let x = texel_coordinate_f32(subtexel.resolve(u * self.width as f32 - 0.5))?;
         let y = texel_coordinate_f32(subtexel.resolve(v * self.height as f32 - 0.5))?;
         let (ix, iy) = (floor_f32(x), floor_f32(y));
         let (tx, ty) = (x - ix as f32, y - iy as f32);
-        let [ax, ay] = address;
         let mut result = [0.; 4];
         for dy in 0..2 {
             for dx in 0..2 {
-                let xx = ax.index(ix.saturating_add(dx), self.width);
-                let yy = ay.index(iy.saturating_add(dy), self.height);
                 let weight = (if dx == 1 { tx } else { 1. - tx }) * (if dy == 1 { ty } else { 1. - ty });
-                let texel = self.at(xx, yy, 0)?;
+                let texel = match address.indices(
+                    [ix.saturating_add(dx), iy.saturating_add(dy)],
+                    [self.width, self.height],
+                ) {
+                    Some([xx, yy]) => self.at(xx, yy, 0)?,
+                    None => border,
+                };
                 for (out, t) in result.iter_mut().zip(texel) {
                     *out += t * weight;
                 }
@@ -488,37 +580,48 @@ impl Decoded {
     }
 
     /// The texel `uv` falls in (texel `i` covering `[i, i + 1)` after scaling by the size), addressed, in f32: point
-    /// filtering. A coordinate that isn't finite or past an i32's range is refused.
-    pub fn point(&self, uv: [f32; 2], address: [Address; 2]) -> Result<[f32; 4]> {
+    /// filtering; outside a border axis, the border colour. A coordinate that isn't finite or past an i32's range is
+    /// refused, as is a border axis with no colour.
+    pub fn point(&self, uv: [f32; 2], address: impl Into<Addressing<2>>) -> Result<[f32; 4]> {
+        let address: Addressing<2> = address.into();
+        let border = address.border_colour()?;
         self.plane()?;
-        let ([u, v], [ax, ay]) = (uv, address);
+        let [u, v] = uv;
         let x = texel_coordinate_f32(u * self.width as f32)?;
         let y = texel_coordinate_f32(v * self.height as f32)?;
-        self.at(
-            ax.index(floor_f32(x), self.width),
-            ay.index(floor_f32(y), self.height),
-            0,
-        )
+        match address.indices([floor_f32(x), floor_f32(y)], [self.width, self.height]) {
+            Some([xx, yy]) => self.at(xx, yy, 0),
+            None => Ok(border),
+        }
     }
 
-    /// The texel of a volume (or a 2D level, one slice) that `uvw` falls in, addressed along each axis, in f32.
-    pub fn point_3d(&self, uvw: [f32; 3], address: [Address; 3]) -> Result<[f32; 4]> {
-        let ([u, v, w], [ax, ay, az]) = (uvw, address);
-        let axis =
-            |c: f32, a: Address, n: u32| Ok(a.index(floor_f32(texel_coordinate_f32(c * n as f32)?), n));
-        self.at(
-            axis(u, ax, self.width)?,
-            axis(v, ay, self.height)?,
-            axis(w, az, self.depth)?,
-        )
+    /// The texel of a volume (or a 2D level, one slice) that `uvw` falls in, addressed along each axis, in f32; outside
+    /// a border axis, the border colour.
+    pub fn point_3d(&self, uvw: [f32; 3], address: impl Into<Addressing<3>>) -> Result<[f32; 4]> {
+        let address: Addressing<3> = address.into();
+        let border = address.border_colour()?;
+        let [u, v, w] = uvw;
+        let axis = |c: f32, n: u32| -> Result<i64> { Ok(floor_f32(texel_coordinate_f32(c * n as f32)?)) };
+        let at = [axis(u, self.width)?, axis(v, self.height)?, axis(w, self.depth)?];
+        match address.indices(at, [self.width, self.height, self.depth]) {
+            Some([x, y, z]) => self.at(x, y, z),
+            None => Ok(border),
+        }
     }
 
     /// Linear between the eight texels about `uvw` in a volume, in f32: the coordinate per axis (scaled by the size,
     /// minus a half, resolved to `subtexel` precision), the weights `(1 - t)` and `t` per axis multiplied x, then y,
     /// then z, and the sum over the texels slice by slice, row by row. A coordinate that isn't finite or past an i32's
     /// range is refused.
-    pub fn linear_3d(&self, uvw: [f32; 3], address: [Address; 3], subtexel: Subtexel) -> Result<[f32; 4]> {
-        let ([u, v, w], [ax, ay, az]) = (uvw, address);
+    pub fn linear_3d(
+        &self,
+        uvw: [f32; 3],
+        address: impl Into<Addressing<3>>,
+        subtexel: Subtexel,
+    ) -> Result<[f32; 4]> {
+        let address: Addressing<3> = address.into();
+        let border = address.border_colour()?;
+        let [u, v, w] = uvw;
         let (sw, sh, sd) = (self.width, self.height, self.depth);
         let axis = |c: f32, n: u32| -> Result<(i64, f32)> {
             let t = texel_coordinate_f32(subtexel.resolve(c * n as f32 - 0.5))?;
@@ -531,11 +634,17 @@ impl Decoded {
         for dz in 0..2 {
             for dy in 0..2 {
                 for dx in 0..2 {
-                    let texel = self.at(
-                        ax.index(bx.saturating_add(dx), sw),
-                        ay.index(by.saturating_add(dy), sh),
-                        az.index(bz.saturating_add(dz), sd),
-                    )?;
+                    let texel = match address.indices(
+                        [
+                            bx.saturating_add(dx),
+                            by.saturating_add(dy),
+                            bz.saturating_add(dz),
+                        ],
+                        [sw, sh, sd],
+                    ) {
+                        Some([x, y, z]) => self.at(x, y, z)?,
+                        None => border,
+                    };
                     let wt = weight(dx, tx) * weight(dy, ty) * weight(dz, tz);
                     for (out, t) in result.iter_mut().zip(texel) {
                         *out += t * wt;
@@ -592,8 +701,9 @@ mod tests {
     /// pattern 0 1 2 3 3 2 1 0 repeating), clamp, and mirrored once about the origin then the edge.
     #[test]
     fn addressing_out_of_range() {
-        let read =
-            |a: Address, from: i64, to: i64| -> Vec<usize> { (from..=to).map(|i| a.index(i, 4)).collect() };
+        let read = |a: Address, from: i64, to: i64| -> Vec<usize> {
+            (from..=to).map(|i| a.index(i, 4).unwrap()).collect()
+        };
         assert_eq!(read(Address::Wrap, -5, 5), [3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1]);
         assert_eq!(
             read(Address::Mirror, -5, 8),
@@ -603,6 +713,84 @@ mod tests {
         assert_eq!(
             read(Address::MirrorOnce, -5, 5),
             [3, 3, 2, 1, 0, 0, 1, 2, 3, 3, 3]
+        );
+        // a border axis reads the texels inside, and no texel outside
+        let border: Vec<Option<usize>> = (-2..=5).map(|i| Address::Border.index(i, 4)).collect();
+        assert_eq!(
+            border,
+            [None, None, Some(0), Some(1), Some(2), Some(3), None, None]
+        );
+    }
+
+    /// Border addressing reads the stated colour outside the texture, in both precisions and every filter: a 2 x 1
+    /// texture, black then white, sampled past its left edge reads the border there; bilinear at the left edge mixes
+    /// half the border with half the black texel; inside, the texels. The colour is taken as it is (no transfer). A
+    /// border axis with no colour, or a colour that isn't finite, is refused; an array of addresses has none.
+    #[test]
+    fn border_addressing_reads_the_stated_colour() {
+        let l = Levels::one(2, 1, vec![0, 0, 0, 255, 255, 255, 255, 255]).unwrap();
+        let axes = [Address::Border, Address::Clamp];
+        let (zero, one) = (
+            Addressing::bordered(axes, [0.0; 4]),
+            Addressing::bordered(axes, [1.0; 4]),
+        );
+        // point, past the left edge: the border; inside: the texel
+        assert_eq!(
+            l.point(0, [-0.25, 0.5], zero, Transfer::Stored).unwrap(),
+            [0.0; 4]
+        );
+        assert_eq!(l.point(0, [-0.25, 0.5], one, Transfer::Stored).unwrap(), [1.0; 4]);
+        assert_eq!(
+            l.point(0, [0.25, 0.5], one, Transfer::Stored).unwrap(),
+            [0.0, 0.0, 0.0, 1.0]
+        );
+        // bilinear at u = 0: half a texel left of the black texel's centre, half the border and half black
+        assert_eq!(
+            l.bilinear(0, [0.0, 0.5], one, Transfer::Stored).unwrap(),
+            [0.5, 0.5, 0.5, 1.0]
+        );
+        assert_eq!(
+            l.bilinear(0, [0.0, 0.5], zero, Transfer::Stored).unwrap(),
+            [0.0, 0.0, 0.0, 0.5]
+        );
+        // the colour is not decoded by the transfer
+        let grey = Addressing::bordered(axes, [0.5; 4]);
+        assert_eq!(
+            l.point(0, [-0.25, 0.5], grey, Transfer::SrgbColour).unwrap(),
+            [0.5; 4]
+        );
+        assert_eq!(
+            l.trilinear([-1.0, 0.5], 0.0, one, Transfer::Stored).unwrap(),
+            [1.0; 4]
+        );
+        // f32 texels, 2D and volumes
+        let d = l.decoded(0, Transfer::Stored).unwrap();
+        assert_eq!(d.point([1.5, 0.5], one).unwrap(), [1.0; 4]);
+        assert_eq!(d.bilinear([0.0, 0.5], one).unwrap(), [0.5, 0.5, 0.5, 1.0]);
+        assert_eq!(d.bilinear([0.0, 0.5], zero).unwrap(), [0.0, 0.0, 0.0, 0.5]);
+        let v = Decoded::volume(1, 1, 2, vec![[0.25; 4], [0.75; 4]]).unwrap();
+        let volume = Addressing::bordered([Address::Clamp, Address::Clamp, Address::Border], [1.0; 4]);
+        assert_eq!(v.point_3d([0.5, 0.5, 1.5], volume).unwrap(), [1.0; 4]);
+        assert_eq!(v.point_3d([0.5, 0.5, 0.25], volume).unwrap(), [0.25; 4]);
+        // halfway between the far slice's centre and the border beyond it
+        assert_eq!(
+            v.linear_3d([0.5, 0.5, 1.0], volume, Subtexel::Exact).unwrap(),
+            [0.875; 4]
+        );
+        // a border axis needs a colour, a finite one; the stored texel past a border is none
+        assert!(l.point(0, [0.25, 0.5], axes, Transfer::Stored).is_err());
+        assert!(d.bilinear([0.5, 0.5], axes).is_err());
+        let nan = Addressing::bordered(axes, [f32::NAN, 0.0, 0.0, 0.0]);
+        assert!(l.bilinear(0, [0.5, 0.5], nan, Transfer::Stored).is_err());
+        assert!(l.texel(0, -1, 0, axes).is_err());
+        assert_eq!(l.texel(0, 1, 0, axes).unwrap(), [255; 4]);
+        // an array of addresses is addressing with no border colour
+        assert_eq!(
+            Addressing::from([Address::Wrap; 2]),
+            Addressing {
+                axes: [Address::Wrap; 2],
+                border: None
+            }
         );
     }
 
