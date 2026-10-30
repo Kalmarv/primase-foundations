@@ -120,6 +120,20 @@ Building needs a Rust toolchain of at least 1.99 (edition 2024); `rust-toolchain
 
 The asset-conversion library [primase](https://github.com/Kalmarv/primase) is built on this crate.
 
+## Sampling borders and compression levels
+
+`sampling::Address::Border` reads the colour stated by `Addressing<N>` outside that axis. All filters accept
+`impl Into<Addressing<N>>`; arrays of addresses still work when no border is needed. A border without a finite
+colour is refused. `Levels::texel` refuses an outside border coordinate rather than returning a texel.
+
+With `compress` enabled, `oodle::Oodle::compress_at` accepts a named `oodle::Level`; `compress_as` stays at level 4.
+Deflate decoding uses `zlib-rs`; encoding remains on flate2's miniz_oxide backend, retaining its encoded bytes.
+
+## Check the examples
+
+From the repository root, `cargo test -p primase-foundations --doc` checks the crate documentation, and
+`cargo build -p primase-foundations --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
+
 ## License
 
 GPL-3.0-or-later, see [LICENSE](LICENSE). Dependencies keep their own licenses; in particular oozextract, which this crate decodes Oodle with, is MIT-licensed.
