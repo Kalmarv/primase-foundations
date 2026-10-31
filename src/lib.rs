@@ -77,6 +77,10 @@ pub const SOURCES: &[(&str, &[u8])] = &[
     ("foundations/bytes.rs", include_bytes!("bytes.rs")),
     ("foundations/color.rs", include_bytes!("color.rs")),
     (
+        "foundations/compress/lzo1x.rs",
+        include_bytes!("compress/lzo1x.rs"),
+    ),
+    (
         "foundations/compress/lzo2a.rs",
         include_bytes!("compress/lzo2a.rs"),
     ),

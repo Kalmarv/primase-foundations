@@ -1,0 +1,13 @@
+file	input	level	length	md5
+text-1.lzo1x	text	1	19490	a9b3b4f93b6b720770d8b20669d0fc19
+text-9.lzo1x	text	9	19490	a9b3b4f93b6b720770d8b20669d0fc19
+low-entropy-1.lzo1x	low-entropy	1	16384	cd28ee73350ef3ddd1ae2b46d797cd05
+low-entropy-9.lzo1x	low-entropy	9	16384	cd28ee73350ef3ddd1ae2b46d797cd05
+far-1.lzo1x	far	1	50152	d1e2d6289f45d62e67cda7d9cebc3c06
+far-9.lzo1x	far	9	50152	d1e2d6289f45d62e67cda7d9cebc3c06
+zeros-1.lzo1x	zeros	1	70000	874410694fa6ef97accb67ea8decd9ca
+zeros-9.lzo1x	zeros	9	70000	874410694fa6ef97accb67ea8decd9ca
+one-1.lzo1x	one	1	1	0cc175b9c0f1b6a831c399e269772661
+one-9.lzo1x	one	9	1	0cc175b9c0f1b6a831c399e269772661
+short-1.lzo1x	short	1	21	7d7c1c132ca8f69e8ca991341f42852a
+short-9.lzo1x	short	9	21	7d7c1c132ca8f69e8ca991341f42852a

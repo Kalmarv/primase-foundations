@@ -7,6 +7,7 @@
 //! | zlib (RFC 1950) | [`Zlib`] | yes | yes |
 //! | zlib with a missing end marker or checksum | [`ZlibUnterminated`] | yes | no |
 //! | Zstandard frame (RFC 8878) | [`Zstd`] | yes | no |
+//! | LZO1X (miniLZO's format) | [`Lzo1x`] | yes | no |
 //! | LZO2A | [`Lzo2a`] | yes | no |
 //! | Oodle (Kraken, Mermaid, Selkie, Leviathan) | [`oodle::Oodle`] | yes | Kraken, with the game's library only |
 //!
@@ -14,8 +15,8 @@
 //! produces more or fewer bytes, has input left over, ends early, or (where the format carries one) fails its
 //! checksum; the error names the codec and the input offset. There is no format autodetection: the caller says which
 //! codec a stream is. A size claimed by a container is untrusted, so what a decode allocates for it is bounded by the
-//! input: LZ4, deflate, zlib and LZO2A refuse, before allocating anything, a claim above their format's ratio
-//! ([`LZ4_MAX_RATIO`], [`DEFLATE_MAX_RATIO`], [`LZO2A_MAX_RATIO`]) times the input's length, and zstd grows its output
+//! input: LZ4, deflate, zlib, LZO1X and LZO2A refuse, before allocating anything, a claim above their format's ratio
+//! ([`LZ4_MAX_RATIO`], [`DEFLATE_MAX_RATIO`], [`LZO1X_MAX_RATIO`], [`LZO2A_MAX_RATIO`]) times the input's length, and zstd grows its output
 //! block by block as the stream produces it. Oodle's ratio is not bounded here: its decode allocates the claimed size
 //! up front (fallibly, as [`Error::Limit`]), so bound the size before asking. The tighter bound a container knows is
 //! the caller's to apply.
@@ -34,7 +35,9 @@
 
 use std::io::Write;
 
+mod lzo1x;
 mod lzo2a;
+pub use lzo1x::Lzo1x;
 pub use lzo2a::Lzo2a;
 #[allow(unsafe_code)]
 pub mod oodle;
@@ -317,6 +320,12 @@ impl Decompressor for Deflate {
 /// The most bytes a DEFLATE stream can produce for one byte of input (RFC 1951: a match of 258 bytes takes about two
 /// bits), rounded up: a claimed output size above this times the input is false.
 pub const DEFLATE_MAX_RATIO: usize = 1032;
+
+/// The most bytes an LZO1X stream can produce for one byte of input, rounded up: its longest instructions (an M3 or M4
+/// match, `33 + 255 z + n` or `9 + 255 z + n` bytes) take the instruction byte, `z` zero bytes, the byte `n` and two
+/// distance bytes, so their output stays under 255 times their input; a literal run is one byte out per byte in, and an
+/// M1 or M2 match at most 8 bytes for 2.
+pub const LZO1X_MAX_RATIO: usize = 255;
 
 /// The most bytes an LZO2A stream can produce for one byte of input, rounded up: a long match of length `9 + 255 z + n`
 /// takes the two bytes of its distance, `z` zero bytes and the byte `n`, so its output stays under 255 times its input.

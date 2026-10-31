@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `compress::Lzo1x`: LZO1X decoding (`lzo1x_decompress_safe` of LZO 2.10, the format miniLZO writes; Nadeo's Gbx
+  files store their bodies in it), strict as the other codecs, with `LZO1X_MAX_RATIO` bounding a claimed size by
+  the input. Checked against hand-worked streams and streams written by LZO 2.10's own compressors (python-lzo).
+
 ## 0.3.0 (2026-10-29)
 
 - `oodle::Level` and `Oodle::compress_at`: compress at a named level (a DCX header's level byte); `compress_as`

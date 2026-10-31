@@ -1,5 +1,7 @@
 //! Hand-built hostile inputs: each must come back as an error, never a panic or an allocation sized by a claim.
-use primase_foundations::compress::{Decompressor, Deflate, Error, Lz4, Lzo2a, Zlib, ZlibUnterminated, Zstd};
+use primase_foundations::compress::{
+    Decompressor, Deflate, Error, Lz4, Lzo1x, Lzo2a, Zlib, ZlibUnterminated, Zstd,
+};
 use primase_foundations::parallel::{RowsError, Threads, rows_mut};
 use primase_foundations::sampling::{Address, Levels, Transfer};
 
@@ -84,11 +86,12 @@ fn sampling_refuses_levels_that_do_not_hold_their_size() {
 fn claimed_sizes_beyond_what_the_input_can_produce_are_refused_unallocated() {
     const CLAIM: usize = 1 << 40;
     let junk = [0x10u8, 0, 0, 0, 0];
-    let codecs: [(&str, &dyn Decompressor); 5] = [
+    let codecs: [(&str, &dyn Decompressor); 6] = [
         ("lz4", &Lz4),
         ("deflate", &Deflate),
         ("zlib", &Zlib),
         ("zlib-unterminated", &ZlibUnterminated),
+        ("lzo1x", &Lzo1x),
         ("lzo2a", &Lzo2a),
     ];
     for (name, codec) in codecs {
