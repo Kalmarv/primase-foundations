@@ -171,3 +171,63 @@ fn deflate_of_an_unstated_size_is_bounded_by_its_output() -> Result<()> {
     assert!(Deflate.decompress_up_to(&[0xFF; 16], usize::MAX).is_err());
     Ok(())
 }
+
+/// Fed input 256 bytes at a time and asked for output 1024 bytes at a time (the pieces a reader that interleaves
+/// decoding with other work uses), the inflater gives the bytes a whole decode does, ends where the stream does, and
+/// takes input only as its output needs it.
+#[test]
+fn an_inflater_fed_in_pieces_matches_a_whole_decode() -> Result<()> {
+    let input: Vec<u8> = (0..200_000u32).map(|i| ((i * 7) ^ (i >> 5)) as u8 % 61).collect();
+    for (name, encoded, mut inflater) in [
+        ("zlib", Zlib.compress(&input)?, Inflater::zlib()?),
+        ("deflate", Deflate.compress(&input)?, Inflater::deflate()?),
+    ] {
+        let mut out = Vec::new();
+        let (mut fed, mut avail) = (0usize, 0usize);
+        let mut block = [0u8; 1024];
+        let mut ended = false;
+        while !ended {
+            let mut filled = 0;
+            while filled < block.len() && !ended {
+                if avail == 0 {
+                    let piece = encoded.len().saturating_sub(fed).min(256);
+                    assert!(piece > 0, "{name}: input ran out before the stream ended");
+                    fed += piece;
+                    avail = piece;
+                }
+                let step = inflater.inflate(&encoded[fed - avail..fed], &mut block[filled..])?;
+                avail -= step.consumed;
+                filled += step.produced;
+                ended = step.ended;
+            }
+            out.extend_from_slice(&block[..filled]);
+        }
+        assert_eq!(out, input, "{name}");
+        assert_eq!(
+            (inflater.total_in(), inflater.total_out()),
+            (encoded.len(), input.len()),
+            "{name}"
+        );
+        assert_eq!(avail, 0, "{name}: input left after the end");
+        let after = inflater.inflate(&[1, 2, 3], &mut block)?;
+        assert_eq!(
+            (after.consumed, after.produced, after.ended),
+            (0, 0, true),
+            "{name}"
+        );
+    }
+    // one byte of output from a stream of stored literals needs only the header and the stored block's framing
+    let stored = [
+        0x78, 0x01, 0x01, 0x03, 0x00, 0xFC, 0xFF, b'a', b'b', b'c', 0x02, 0x4D, 0x01, 0x27,
+    ];
+    let mut inflater = Inflater::zlib()?;
+    let mut one = [0u8; 1];
+    let step = inflater.inflate(&stored, &mut one)?;
+    assert_eq!((step.consumed, step.produced, one[0]), (8, 1, b'a'));
+    assert!(
+        Inflater::zlib()?
+            .inflate(&[0x78, 0x01, 0xFF, 0xFF], &mut one)
+            .is_err()
+    );
+    Ok(())
+}

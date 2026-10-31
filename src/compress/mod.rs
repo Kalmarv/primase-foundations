@@ -6,6 +6,7 @@
 //! | raw deflate (RFC 1951) | [`Deflate`] | yes | yes |
 //! | zlib (RFC 1950) | [`Zlib`] | yes | yes |
 //! | zlib with a missing end marker or checksum | [`ZlibUnterminated`] | yes | no |
+//! | zlib or raw deflate, fed piece by piece | [`Inflater`] | yes | no |
 //! | Zstandard frame (RFC 8878) | [`Zstd`] | yes | no |
 //! | LZO1X (miniLZO's format) | [`Lzo1x`] | yes | no |
 //! | LZO2A | [`Lzo2a`] | yes | no |
@@ -20,6 +21,10 @@
 //! block by block as the stream produces it. Oodle's ratio is not bounded here: its decode allocates the claimed size
 //! up front (fallibly, as [`Error::Limit`]), so bound the size before asking. The tighter bound a container knows is
 //! the caller's to apply.
+//!
+//! [`Inflater`] is the exception to whole-payload decoding: a container whose reader interleaves decompression with
+//! other work, feeding input in the pieces the game reads it in, decodes through it one call at a time and checks
+//! the stream's size and end itself.
 //!
 //! # Oodle
 //!
@@ -400,6 +405,89 @@ impl Decompressor for Zlib {
 impl Decompressor for ZlibUnterminated {
     fn decompress(&self, input: &[u8], expected: usize) -> Result<Vec<u8>> {
         inflate(input, expected, true, true)
+    }
+}
+/// A zlib (RFC 1950) or raw DEFLATE stream decoded one call at a time, for a container that has to feed its input in
+/// the pieces the game reads it in and learn when each is used up: [`Inflater::inflate`] behaves as zlib's `inflate`
+/// with `Z_SYNC_FLUSH`, taking input only as the output it writes needs it.
+pub struct Inflater {
+    d: zlib_rs::Inflate,
+    codec: &'static str,
+    ended: bool,
+}
+
+/// What one [`Inflater::inflate`] call did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Inflated {
+    /// Input bytes it consumed, from the start of the slice it was given.
+    pub consumed: usize,
+    /// Output bytes it wrote, from the start of the slice it was given.
+    pub produced: usize,
+    /// The stream reached its end (for zlib, with its Adler-32 checked); nothing more is consumed or produced.
+    pub ended: bool,
+}
+
+impl std::fmt::Debug for Inflater {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inflater")
+            .field("codec", &self.codec)
+            .field("total_in", &self.d.total_in())
+            .field("total_out", &self.d.total_out())
+            .field("ended", &self.ended)
+            .finish()
+    }
+}
+
+impl Inflater {
+    /// An inflater for a zlib stream.
+    pub fn zlib() -> Result<Self> {
+        Ok(Self {
+            d: inflater(true)?,
+            codec: "zlib",
+            ended: false,
+        })
+    }
+    /// An inflater for a raw DEFLATE stream (its window starts zero-filled, as [`Deflate`]'s does).
+    pub fn deflate() -> Result<Self> {
+        Ok(Self {
+            d: inflater(false)?,
+            codec: "deflate",
+            ended: false,
+        })
+    }
+    /// Decodes from `input` into `output` until the output is full, the input is used up, or the stream ends. A call
+    /// that can make no progress (no input left, or no room) consumes and produces nothing. A malformed stream is an
+    /// error naming the offset in the whole stream's input where it was found.
+    pub fn inflate(&mut self, input: &[u8], output: &mut [u8]) -> Result<Inflated> {
+        if self.ended {
+            return Ok(Inflated {
+                consumed: 0,
+                produced: 0,
+                ended: true,
+            });
+        }
+        let (before_in, before_out) = (self.d.total_in(), self.d.total_out());
+        let status = self
+            .d
+            .decompress(input, output, zlib_rs::InflateFlush::SyncFlush)
+            .map_err(|e| invalid(self.codec, total_in(&self.d), inflate_error(e)))?;
+        self.ended = status == zlib_rs::Status::StreamEnd;
+        // each call moves the totals by at most its slices' lengths
+        let moved =
+            |after: u64, before: u64| usize::try_from(after.saturating_sub(before)).unwrap_or(usize::MAX);
+        Ok(Inflated {
+            consumed: moved(self.d.total_in(), before_in),
+            produced: moved(self.d.total_out(), before_out),
+            ended: self.ended,
+        })
+    }
+    /// Input bytes consumed since the start of the stream.
+    pub fn total_in(&self) -> usize {
+        total_in(&self.d)
+    }
+    /// Output bytes written since the start of the stream.
+    pub fn total_out(&self) -> usize {
+        usize::try_from(self.d.total_out()).unwrap_or(usize::MAX)
     }
 }
 impl Compressor for Deflate {
