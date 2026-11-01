@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2 (2026-11-01)
+
+- `scan` (Unix and Windows): many stored entries of a few large files read in the files' own order, for the
+  whole-archive pass of a census, an index build or an extraction. The wanted entries are sorted by file and offset and
+  joined into windows (16 MiB by default, gaps of at most 1 MiB); each thread reads a window in one call and hands its
+  entries to the caller's function on the same thread, mutable for decryption in place, so decoding overlaps the next
+  reads. On Windows the files are opened unbuffered. An entry that cannot be read reaches the function as its
+  `ExtentError` and the scan goes on; a panic in the function stops it and returns as `parallel::Panicked`. Measured on
+  a full Elden Ring install (97,118 entries, 52 GB stored, decryption and decompression in the function, 16 threads):
+  9.0 s, against 23.2 s entry by entry through the file cache. `scan` is the crate's second stated exception to the
+  no-file-access rule: it opens and reads the files its caller names.
+
 ## 0.3.1 (2026-10-31)
 
 - `sqlite` (feature `sqlite`): the tables of an SQLite 3 file image read whole through `quantydb-sqlite` 0.4.0, with
