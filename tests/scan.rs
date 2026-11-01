@@ -1,10 +1,13 @@
 //! `scan` against the plain reading of the same bytes, on synthetic files written here: every extent reaches `visit`
 //! once, with exactly the bytes at its offset, whatever the threads, window and gap; an extent past the end of its file,
-//! of a missing file or of a file not listed reaches it as that error; a panic in `visit` stops the scan.
+//! of a missing file or of a file not listed reaches it as that error; a panic in `visit` stops the scan; the large reads
+//! held at once stay within four windows a thread, a longer one alone.
 #![cfg(any(unix, windows))]
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use primase_foundations::parallel::Threads;
 use primase_foundations::scan::{Extent, ExtentError, Options, scan};
@@ -244,4 +247,62 @@ fn reads_cover_what_was_asked_and_little_more() {
     })
     .unwrap();
     assert_eq!((s.windows, s.bytes), (2, 8192));
+}
+
+#[test]
+fn large_reads_held_at_once_stay_within_four_windows_a_thread() {
+    // 4 threads of 8 KiB windows: 128 KiB of large reads at once, and the 300 KB extent alone
+    let (window, threads) = (8192u64, 4usize);
+    let budget = window * 4 * threads as u64;
+    let sizes = [2_000_000];
+    let paths = files("held", &sizes);
+    let mut extents: Vec<Extent> = (0..40u64)
+        .map(|k| Extent {
+            file: 0,
+            offset: k * 45_000,
+            len: 20_000 + (k as usize % 5) * 5000,
+        })
+        .collect();
+    extents.push(Extent {
+        file: 0,
+        offset: 1_850_000,
+        len: 150_000,
+    });
+    extents.extend((0..200u64).map(|k| Extent {
+        file: 0,
+        offset: 1_800_000 + k * 100,
+        len: 50,
+    }));
+    let options = Options {
+        threads: Threads::new(threads).unwrap(),
+        window,
+        max_gap: 0,
+    };
+    let (held, most, visited) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
+    scan(&paths, &extents, &options, |i, r| {
+        let bytes = r.unwrap();
+        let e = extents[i];
+        assert!(
+            bytes.iter().zip(e.offset..).all(|(&b, p)| b == byte(0, p)),
+            "extent {i}"
+        );
+        visited.fetch_add(1, Ordering::Relaxed);
+        if e.len as u64 > window {
+            // the extent's read: its aligned span
+            let span = (e.offset + e.len as u64).next_multiple_of(4096) - (e.offset & !4095);
+            let now = held.fetch_add(span, Ordering::SeqCst) + span;
+            most.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(5));
+            held.fetch_sub(span, Ordering::SeqCst);
+        }
+    })
+    .unwrap();
+    assert_eq!(visited.load(Ordering::Relaxed), extents.len() as u64);
+    let most = most.load(Ordering::SeqCst);
+    // the 150 KB extent is longer than the budget and was read alone; the rest overlapped up to the budget
+    assert!(
+        most <= budget.max(155_648),
+        "{most} bytes of large reads held at once"
+    );
+    assert!(most > 2 * 32_768, "the large reads overlapped: {most}");
 }

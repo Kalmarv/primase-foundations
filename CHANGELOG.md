@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `scan` bounds its memory. An extent longer than a window is a large read of its own; the large reads go first,
+  longest first, but those in flight hold at most four windows a thread between them, and one longer than that is read
+  only while no other large read is held. Threads that cannot take the next large read take ordinary windows meanwhile,
+  and a large read's buffer is freed once its extent is visited. The scan holds about `threads` windows plus the larger
+  of four windows a thread and its largest extent; before, each thread kept a buffer as large as the largest extent it
+  had read, and the largest reads started together.
+
 ## 0.3.2 (2026-11-01)
 
 - `scan` (Unix and Windows): many stored entries of a few large files read in the files' own order, for the
