@@ -429,7 +429,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "primase-foundations"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "flate2",
  "half",

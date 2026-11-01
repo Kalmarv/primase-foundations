@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 (2026-11-01)
 
 - `scan` bounds its memory. An extent longer than a window is a large read of its own; the large reads go first,
   longest first, but those in flight hold at most four windows a thread between them, and one longer than that is read
