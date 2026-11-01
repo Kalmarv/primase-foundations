@@ -21,6 +21,7 @@ zlib-rs = { workspace = true, optional = true }
 ruzstd = { workspace = true, optional = true }
 libloading = { workspace = true, optional = true }
 oozextract = { workspace = true, optional = true }
+quantydb-sqlite = { workspace = true, optional = true }
 
 [features]
 # the `compress` module (lz4, deflate/zlib, zstd, LZO2A, Oodle): readers that do not decompress do not pay for it
@@ -28,10 +29,12 @@ compress = ["dep:lz4_flex", "dep:flate2", "dep:zlib-rs", "dep:ruzstd", "dep:libl
 # oozextract as a second Oodle decoder (`compress::reference`) on Windows, to compare the game's own library against
 # (off Windows it is always there, being the decoder). Meant for dev-dependencies and tests.
 reference-decoder = ["compress"]
+# the `sqlite` module: SQLite 3 tables read whole, through quantydb-sqlite
+sqlite = ["dep:quantydb-sqlite"]
 
 [dev-dependencies]
 primase-testdata.workspace = true
-primase-foundations = { workspace = true, features = ["compress", "reference-decoder"] }
+primase-foundations = { workspace = true, features = ["compress", "reference-decoder", "sqlite"] }
 
 [lints]
 workspace = true
@@ -54,6 +57,7 @@ libloading = { version = "=0.9.0", default-features = false, features = ["std"] 
 lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 oozextract = { version = "=0.5.7", default-features = false, features = ["verbose_errors"] }
 primase-foundations = { path = "." }
+quantydb-sqlite = { version = "=0.4.0", default-features = false }
 primase-testdata = { version = "0.1.6", git = "https://github.com/Kalmarv/primase-testdata", rev = "40acdd6a2775412cc812f67e5b3edfdc9b76c54c" }
 ruzstd = { version = "=0.7.3", default-features = false, features = ["std", "hash"] }
 zlib-rs = { version = "=0.6.8", default-features = false, features = ["std"] }

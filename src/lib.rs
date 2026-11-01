@@ -19,6 +19,8 @@
 //!   level of detail, 2D and 3D.
 //! - `compress` (feature `compress`): one `Decompressor` / `Compressor` interface over LZ4, deflate, zlib, zstd,
 //!   LZO2A and Oodle. Every decode takes the exact expected output size and refuses anything else.
+//! - `sqlite` (feature `sqlite`): the tables of an SQLite 3 file image read whole, a table's columns and every row's
+//!   typed values, refusing what it does not read (a write-ahead log, a `WITHOUT ROWID` table, a damaged b-tree).
 //!
 //! # Example
 //!
@@ -68,6 +70,8 @@ pub mod compress;
 pub mod hash;
 pub mod parallel;
 pub mod sampling;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 pub mod vertex;
 
 /// This crate's source files as `(name, bytes)`, for a caller that keys a disk cache by the code that computed its
@@ -101,6 +105,7 @@ pub const SOURCES: &[(&str, &[u8])] = &[
     ("foundations/lib.rs", include_bytes!("lib.rs")),
     ("foundations/parallel.rs", include_bytes!("parallel.rs")),
     ("foundations/sampling.rs", include_bytes!("sampling.rs")),
+    ("foundations/sqlite.rs", include_bytes!("sqlite.rs")),
     ("foundations/vertex.rs", include_bytes!("vertex.rs")),
 ];
 

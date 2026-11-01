@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `sqlite` (feature `sqlite`): the tables of an SQLite 3 file image read whole through `quantydb-sqlite` 0.4.0, with
+  strict refusals (a write-ahead log, a virtual or `WITHOUT ROWID` table, a row of the wrong width, a b-tree that
+  reaches a page twice or lists rowids out of order, invalid text, a truncated file). Moved here from rme-formats,
+  where it read Tony Hawk: SHRED's databases, unchanged, so that other game readers can use it; its tests and their
+  Python sqlite3 fixture moved with it.
+
 - `compress::Lzo1x`: LZO1X decoding (`lzo1x_decompress_safe` of LZO 2.10, the format miniLZO writes; Nadeo's Gbx
   files store their bodies in it), strict as the other codecs, with `LZO1X_MAX_RATIO` bounding a claimed size by
   the input. Checked against hand-worked streams and streams written by LZO 2.10's own compressors (python-lzo).
