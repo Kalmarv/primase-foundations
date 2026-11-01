@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 (2026-10-31)
 
 - `sqlite` (feature `sqlite`): the tables of an SQLite 3 file image read whole through `quantydb-sqlite` 0.4.0, with
   strict refusals (a write-ahead log, a virtual or `WITHOUT ROWID` table, a row of the wrong width, a b-tree that
@@ -11,6 +11,9 @@
 - `compress::Lzo1x`: LZO1X decoding (`lzo1x_decompress_safe` of LZO 2.10, the format miniLZO writes; Nadeo's Gbx
   files store their bodies in it), strict as the other codecs, with `LZO1X_MAX_RATIO` bounding a claimed size by
   the input. Checked against hand-worked streams and streams written by LZO 2.10's own compressors (python-lzo).
+- `compress::Inflater`: a streaming inflater for zlib and raw DEFLATE that takes its input in pieces with a sync flush
+  and reports what each call consumed and produced, so a reader can interleave inflating with producing the input
+  (pack files that decrypt 256 bytes at a time).
 
 ## 0.3.0 (2026-10-29)
 
