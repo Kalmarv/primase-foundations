@@ -14,6 +14,9 @@
 //! - [`vertex`]: DXGI vertex element formats, layouts with explicit or appended offsets, stream decoding, packed
 //!   positions and tangents, and triangle-strip and index-buffer helpers.
 //! - [`parallel`]: an ordered, panic-safe parallel map over independent items, with the thread count passed in.
+//! - `scan` (Unix and Windows): many stored entries of a few large files read in the files' own order, in large
+//!   (on Windows unbuffered) reads on a stated number of threads, each entry handed to the caller on the thread that
+//!   read it: the whole-archive pass. The one module that reads files, by the paths its caller names.
 //! - [`color`]: the sRGB transfer curve in `f64` and `f32` and its byte forms.
 //! - [`sampling`]: texture sampling as GPUs define it: address modes, point, bilinear and trilinear filtering,
 //!   level of detail, 2D and 3D.
@@ -70,6 +73,8 @@ pub mod compress;
 pub mod hash;
 pub mod parallel;
 pub mod sampling;
+#[cfg(any(unix, windows))]
+pub mod scan;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod vertex;
@@ -105,6 +110,7 @@ pub const SOURCES: &[(&str, &[u8])] = &[
     ("foundations/lib.rs", include_bytes!("lib.rs")),
     ("foundations/parallel.rs", include_bytes!("parallel.rs")),
     ("foundations/sampling.rs", include_bytes!("sampling.rs")),
+    ("foundations/scan.rs", include_bytes!("scan.rs")),
     ("foundations/sqlite.rs", include_bytes!("sqlite.rs")),
     ("foundations/vertex.rs", include_bytes!("vertex.rs")),
 ];

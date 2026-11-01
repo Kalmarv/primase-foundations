@@ -196,7 +196,7 @@ pub fn rows_mut<T: Send>(
     }
 }
 
-fn panicked(item: usize, payload: &(dyn std::any::Any + Send)) -> Panicked {
+pub(crate) fn panicked(item: usize, payload: &(dyn std::any::Any + Send)) -> Panicked {
     let message = payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())

@@ -12,6 +12,7 @@ It was written for readers of Frostbite (skate.), RAGE (Grand Theft Auto V), Anv
 | `hash` | CRC-32, Adler-32 from any start value, Jenkins one-at-a-time (case-folded and exact), MD5 with its block function exposed, SDBM. Inputs are never normalized. |
 | `vertex` | DXGI vertex element formats (float, half, SNORM/UNORM 8/10/16-bit), layouts with explicit or appended offsets, stream decoding, packed 11/11/10 and 21/21/22 positions, packed tangents, strip-to-list conversion, index widths, splitting a mesh into 16-bit-indexed pieces. The `f32` operation order is fixed and not fused. |
 | `parallel` | An ordered parallel `map` and an in-place `rows_mut` over scoped threads, with the thread count passed in. Results come back in item order and equal the serial run; a panicking item becomes an error naming it. |
+| `scan` | Many stored entries of a few large files (an archive's entries in its containers) read in the files' own order: neighbours joined into large reads, unbuffered on Windows, on a stated number of threads, each entry handed to your function on the thread that read it, mutable for decryption in place. An entry that cannot be read reaches your function as its error; the scan goes on. Unix and Windows. |
 | `color` | The sRGB transfer curve in `f64` and `f32`, and its byte forms (a 256-entry table one way, a table of rounding thresholds the other). |
 | `sampling` | Texture sampling as GPUs define it: wrap, clamp, mirror and mirror-once addressing; point, bilinear and trilinear filtering; level of detail from a footprint; 2D and 3D; optional Direct3D 11 sub-texel precision. |
 | `compress` | LZ4 blocks, raw deflate, zlib (also with a missing end marker), Zstandard, LZO1X, LZO2A and Oodle behind one `Decompressor`/`Compressor` interface. |
@@ -50,7 +51,7 @@ The same example is the crate-level documentation's, and `cargo test` compiles a
 
 | feature | default | what it enables | what it pulls in |
 | --- | --- | --- | --- |
-| *(none)* | yes | `bytes`, `hash`, `vertex`, `parallel`, `color`, `sampling` | `thiserror`, `half` |
+| *(none)* | yes | `bytes`, `hash`, `vertex`, `parallel`, `scan` (Unix and Windows), `color`, `sampling` | `thiserror`, `half` |
 | `compress` | no | the `compress` module: LZ4, deflate, zlib, Zstandard, LZO1X, LZO2A, Oodle | `lz4_flex`, `flate2` (pure-Rust backend), `ruzstd`, `libloading`, `oozextract` |
 | `sqlite` | no | the `sqlite` module: SQLite 3 tables read whole | `quantydb-sqlite` (pure Rust, no `unsafe`) |
 | `reference-decoder` | no | on Windows, `compress::reference`: oozextract exposed as a second Oodle decoder, for comparing the game's library against it (off Windows it is always there under `compress`) | `compress` |
@@ -80,7 +81,7 @@ The Oodle library is not shipped with this crate and is not downloaded. Point `O
 - `Levels` has public fields, so every sampling method checks the level it reads and refuses one that is missing or does not hold its size's bytes; `parallel::rows_mut` refuses a row length of zero.
 - A failed `Cursor` read or seek leaves the cursor where it was.
 - Decoding is exact rather than lenient: no format autodetection, no implicit normalization of hash inputs, no implicit coordinate-axis changes, and `f32` arithmetic in a documented order without fused multiply-add, so the same bytes give the same bits on every platform.
-- The library modules do no file, environment or process access. The one place a path is touched is `Oodle::load`, which canonicalizes the path it is given.
+- The library modules do no file, environment or process access, with two stated exceptions: `Oodle::load` canonicalizes the path it is given, and `scan` opens and reads the files its caller names (reading only).
 - `unsafe` code is denied crate-wide except in `compress::oodle`, where it calls into the loaded library.
 
 ## What it does not do
