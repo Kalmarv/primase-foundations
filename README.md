@@ -1,24 +1,52 @@
 # primase-foundations
 
-Checked byte reading, game-file hashes, vertex decoding, texture sampling and the compression codecs games store their data in: the shared building blocks for writing a reader or converter for a game's files.
+A Rust library of shared building blocks for programs that read and convert game files. It is the base layer of [primase](https://github.com/Kalmarv/primase) and the format crates built on it, and it does not read any game's archive or container format itself.
 
-It was written for readers of Frostbite (skate.), RAGE (Grand Theft Auto V), Anvil (Riders Republic) and FromSoftware (Sekiro) data, so its hashes, codecs and layout conventions are the ones those games use: Grand Theft Auto V's Jenkins name hashes, Sekiro's zlib and Oodle streams, skate.'s zlib blocks, Riders Republic's LZ4 blocks, DXGI vertex formats, DXBC's MD5 checksum. None of it is specific to a game, and it reads no game's container format itself; it is the layer a container reader sits on.
+## Features
 
-## What is in it
+- Bounds-checked `View` and `Cursor` byte readers with the byte order stated on every multi-byte read
+- CRC-32, Adler-32 from any start value, Jenkins one-at-a-time (case-folded and exact), MD5 with its block function exposed, and SDBM
+- Decoding of ten DXGI vertex element formats, vertex layouts and vertex streams
+- Packed 11/11/10 and 21/21/22 positions, packed tangents, triangle strip to list conversion, and mesh splitting for 16-bit indices
+- Texture sampling with wrap, clamp, mirror, mirror-once and border addressing; point, bilinear and trilinear filtering; 2D and 3D textures
+- The sRGB transfer curve in `f64` and `f32`, with table-based byte conversions
+- An ordered parallel `map` and in-place `rows_mut` over scoped threads with a stated thread count
+- `scan`, which reads many entries of a few large archive files in file order on several threads (unbuffered on Windows)
+- Decompression of LZ4 blocks, raw deflate, zlib, Zstandard, LZO1X, LZO2A and Oodle, plus a streaming zlib/deflate inflater (feature `compress`)
+- Compression to LZ4, deflate and zlib, and to Oodle Kraken through the game's own Oodle library
+- A walker that checks an Oodle stream's block and quantum headers without decoding it
+- Reading whole tables from an SQLite 3 file image (feature `sqlite`)
+- Malformed input returns an error naming the offset instead of panicking, and decoders allocate no more than the input can produce (Oodle excepted)
+- Vertex arithmetic uses a fixed `f32` operation order without fused multiply-add, so the same bytes give the same bits on every platform
+- Library code does no file, environment or process access, except `Oodle::load` and `scan`; `unsafe` is used only in `compress::oodle`
 
-| module | what it gives you |
+## Getting Started
+
+### Requirements
+
+Rust 1.99 or newer (edition 2024). `rust-toolchain.toml` pins 1.99.0.
+
+### Installation
+
+The crate is published on [crates.io](https://crates.io/crates/primase-foundations).
+
+```sh
+cargo add primase-foundations
+cargo add primase-foundations --features compress,sqlite
+```
+
+| feature | what it adds |
 | --- | --- |
-| `bytes` | `View` and `Cursor` over a borrowed slice. Every multi-byte read states its byte order; a refused read reports the absolute file offset; `Cursor::count` checks that a stored element count fits in the rest of the data before you allocate for it. |
-| `hash` | CRC-32, Adler-32 from any start value, Jenkins one-at-a-time (case-folded and exact), MD5 with its block function exposed, SDBM. Inputs are never normalized. |
-| `vertex` | DXGI vertex element formats (float, half, SNORM/UNORM 8/10/16-bit), layouts with explicit or appended offsets, stream decoding, packed 11/11/10 and 21/21/22 positions, packed tangents, strip-to-list conversion, index widths, splitting a mesh into 16-bit-indexed pieces. The `f32` operation order is fixed and not fused. |
-| `parallel` | An ordered parallel `map` and an in-place `rows_mut` over scoped threads, with the thread count passed in. Results come back in item order and equal the serial run; a panicking item becomes an error naming it. |
-| `scan` | Many stored entries of a few large files (an archive's entries in its containers) read in the files' own order: neighbours joined into large reads, unbuffered on Windows, on a stated number of threads, each entry handed to your function on the thread that read it, mutable for decryption in place. An entry that cannot be read reaches your function as its error; the scan goes on. Unix and Windows. |
-| `color` | The sRGB transfer curve in `f64` and `f32`, and its byte forms (a 256-entry table one way, a table of rounding thresholds the other). |
-| `sampling` | Texture sampling as GPUs define it: wrap, clamp, mirror and mirror-once addressing; point, bilinear and trilinear filtering; level of detail from a footprint; 2D and 3D; optional Direct3D 11 sub-texel precision. |
-| `compress` | LZ4 blocks, raw deflate, zlib (also with a missing end marker), Zstandard, LZO1X, LZO2A and Oodle behind one `Decompressor`/`Compressor` interface. |
-| `sqlite` | The tables of an SQLite 3 file image read whole: a table's columns and every row's typed values, the rowid alias column read as the rowid and a REAL column's stored integers read as reals. A write-ahead-log database, a virtual or `WITHOUT ROWID` table, a row of the wrong width, a b-tree that reaches a page twice or lists rowids out of order, invalid text and a truncated file are refused, naming the page. |
+| *(default)* | `bytes`, `hash`, `vertex`, `parallel`, `scan` (Unix and Windows), `color`, `sampling` |
+| `compress` | the `compress` module: LZ4, deflate, zlib, Zstandard, LZO1X, LZO2A and Oodle |
+| `sqlite` | the `sqlite` module, through `quantydb-sqlite` |
+| `reference-decoder` | on Windows, `compress::reference`: oozextract as a second Oodle decoder for comparing against the game's library |
 
-## Example
+The Oodle library is not shipped or downloaded. `Oodle::load` takes the path of the DLL the game ships (`oo2core_5_win64.dll`, `oo2core_6_win64.dll` or `oo2core_9_win64.dll`) and is `unsafe` because loading it runs native code. Off Windows, `Oodle::open(None, version)` decodes with the pure-Rust oozextract instead, which cannot compress; on Windows a library path is required.
+
+### Usage
+
+Read a small record with a `Cursor`, then see what a truncated copy reports:
 
 ```rust
 use primase_foundations::bytes::{Cursor, Endian, Field};
@@ -45,99 +73,6 @@ assert_eq!(refusal.to_string(), "entry count at 0x4: 4 bytes run past the end of
 Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
-The same example is the crate-level documentation's, and `cargo test` compiles and runs it.
+With `compress` enabled, every codec decodes through `Decompressor::decompress(input, expected_len)`, where the expected size comes from the container; any other output size, leftover input or failed checksum is an error. There is no format autodetection. [docs/guarantees.md](docs/guarantees.md) lists what the crate guarantees and what it does not do.
 
-## Features
-
-| feature | default | what it enables | what it pulls in |
-| --- | --- | --- | --- |
-| *(none)* | yes | `bytes`, `hash`, `vertex`, `parallel`, `scan` (Unix and Windows), `color`, `sampling` | `thiserror`, `half` |
-| `compress` | no | the `compress` module: LZ4, deflate, zlib, Zstandard, LZO1X, LZO2A, Oodle | `lz4_flex`, `flate2` (pure-Rust backend), `ruzstd`, `libloading`, `oozextract` |
-| `sqlite` | no | the `sqlite` module: SQLite 3 tables read whole | `quantydb-sqlite` (pure Rust, no `unsafe`) |
-| `reference-decoder` | no | on Windows, `compress::reference`: oozextract exposed as a second Oodle decoder, for comparing the game's library against it (off Windows it is always there under `compress`) | `compress` |
-
-### Compression
-
-Each codec decodes with `Decompressor::decompress(input, expected_len)`. The expected output size comes from the container, and a stream that produces more, fewer, or has input left over is refused, as is one that ends early or fails a checksum the format carries. The error names the codec and the input offset. There is no format autodetection. Encoding is available for LZ4, deflate and zlib, and for Oodle (Kraken) through the game's library.
-
-| codec | type | decode | encode |
-| --- | --- | --- | --- |
-| LZ4 raw block | `Lz4` | yes | yes |
-| raw deflate | `Deflate` | yes | yes |
-| zlib | `Zlib`, `ZlibUnterminated` | yes | `Zlib` only |
-| Zstandard frame | `Zstd` | yes | no |
-| LZO1X (miniLZO's format) | `Lzo1x` | yes | no |
-| LZO2A | `Lzo2a` | yes | no |
-| Oodle | `oodle::Oodle` | yes | Kraken, with the game's library only |
-
-**Oodle.** `oodle_framing::walk` reads an Oodle stream's block and quantum headers without decoding it and checks that they end exactly at the end of the payload and the decoded size, because the library's one-shot decode does not say whether bytes were left over. The library and oozextract decode a stream with a byte added after it; a container that knows its payload's exact extent calls `walk` first.
-
-The Oodle library is not shipped with this crate and is not downloaded. Point `Oodle::load` at the copy the game itself ships (`oo2core_5_win64.dll`, `oo2core_6_win64.dll` or `oo2core_9_win64.dll`, for the `Version` that matches); it loads exactly that path and is `unsafe`, because loading a native library runs its initialization code. Off Windows, `Oodle::open(None, version)` decodes with the pure-Rust [oozextract](https://github.com/lvlvllvlvllvlvl/oozextract) instead, which refuses a stream it cannot decode and cannot compress. On Windows there is no built-in decoder, so a library path is required.
-
-## What it guarantees
-
-- The byte readers, the vertex decoders and the codecs return errors on malformed input instead of panicking. Offsets, counts and sizes are checked for overflow before they are used in them.
-- A refused read says where: `bytes` errors carry the absolute file offset (even where adding the origin overflows `usize`), `FieldError` names the field, and codec errors name the codec and the input offset.
-- `Levels` has public fields, so every sampling method checks the level it reads and refuses one that is missing or does not hold its size's bytes; `parallel::rows_mut` refuses a row length of zero.
-- A failed `Cursor` read or seek leaves the cursor where it was.
-- Decoding is exact rather than lenient: no format autodetection, no implicit normalization of hash inputs, no implicit coordinate-axis changes, and `f32` arithmetic in a documented order without fused multiply-add, so the same bytes give the same bits on every platform.
-- The library modules do no file, environment or process access, with two stated exceptions: `Oodle::load` canonicalizes the path it is given, and `scan` opens and reads the files its caller names (reading only).
-- `unsafe` code is denied crate-wide except in `compress::oodle`, where it calls into the loaded library.
-
-## What it does not do
-
-- It does not read any game's archive or container format; it has no notion of Sekiro's DCX files, Frostbite's CAS or GTA V's RPF. Those readers sit on top of it.
-- It does not decrypt anything.
-- It does not ship, download or search for the Oodle library. Without the game's copy, Oodle compression is unavailable (oozextract only decodes).
-- A claimed output size is bounded by the input before anything is allocated: LZ4, deflate, zlib, LZO1X and LZO2A refuse a claim above `LZ4_MAX_RATIO`, `DEFLATE_MAX_RATIO`, `LZO1X_MAX_RATIO` or `LZO2A_MAX_RATIO` times the input, and zstd grows its output with what the stream produces. Oodle has no proven ratio, so its decode allocates the claimed size up front (fallibly, as `Error::Limit`): bound a size read from a hostile header first. `Deflate::decompress_up_to` decodes with a maximum instead of an exact size.
-- The Oodle library, when loaded, is native code: this crate cannot vouch for what it does with a hostile stream.
-
-## Tests
-
-```sh
-cargo test --workspace   # synthetic tests; no game files needed (the dev-dependencies turn the codec features on)
-```
-
-Unit and integration tests use hand-worked values, published test vectors (RFC 1321 for MD5, the Adler-32 "Wikipedia" example, the CRC-32 check value) and small fixtures generated by independent programs (`tests/fixtures/vertex`, produced by a separate C# implementation of the arithmetic; LZO2A and LZO1X streams laid out by hand from LZO 2.10's source; LZO1X streams written by python-lzo 1.15, LZO 2.10's own compressors, from synthetic inputs, `tests/fixtures/lzo1x`; an SQLite database written by Python's sqlite3 and dumped by it, value by value, `tests/fixtures/sqlite`).
-
-There are also **real-data tests** that read your own game files; they are skipped, each with a line naming what is missing, unless you opt in. Set the environment variable `GAME_DATA` to the absolute path of a TOML file outside the repository that says where your files are:
-
-```toml
-[tools]
-# the Oodle libraries your games ship, to compare them against oozextract
-oodle6 = 'D:/games/Sekiro/oo2core_6_win64.dll'
-
-[oracles]
-# <root>/<set>/<game>/<file>: here <root>/corpus/general/codecs.tsv
-root = 'D:/oracles'
-
-[scratch]
-root = 'D:/scratch'
-
-[run]
-require = 'gate'   # inputs the tests mark as required fail, rather than skip, when unset
-```
-
-Every section and key is optional and every value is a string. The keys this crate reads are `tools.oodle5`, `tools.oodle6`, `tools.oodle9`, `oracles.root` (for the codec corpus `corpus/general/codecs.tsv`, made by `tests/oracles/codecs.py` from streams cut out of your games, as its header describes) and `scratch.root`; [tests/inputs/README.md](tests/inputs/README.md) lists each with what it is and where it comes from. The file format itself is that of [primase-testdata](https://github.com/Kalmarv/primase-testdata), the test-support crate that reads it. Oodle tests are Windows-only (off Windows oozextract decodes and nothing is configured).
-
-Building needs a Rust toolchain of at least 1.99 (edition 2024); `rust-toolchain.toml` pins 1.99.0.
-
-The asset-conversion library [primase](https://github.com/Kalmarv/primase) is built on this crate.
-
-## Sampling borders and compression levels
-
-`sampling::Address::Border` reads the colour stated by `Addressing<N>` outside that axis. All filters accept
-`impl Into<Addressing<N>>`; arrays of addresses still work when no border is needed. A border without a finite
-colour is refused. `Levels::texel` refuses an outside border coordinate rather than returning a texel.
-
-With `compress` enabled, `oodle::Oodle::compress_at` accepts a named `oodle::Level`; `compress_as` stays at level 4.
-Deflate decoding uses `zlib-rs`; encoding remains on flate2's miniz_oxide backend, retaining its encoded bytes.
-
-## Check the examples
-
-From the repository root, `cargo test -p primase-foundations --doc` checks the crate documentation, and
-`cargo build -p primase-foundations --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
-
-## License
-
-GPL-3.0-or-later, see [LICENSE](LICENSE). Dependencies keep their own licenses; in particular oozextract, which this crate decodes Oodle with, is MIT-licensed.
+Run the tests with `cargo test --workspace`; they need no game files. Opt-in tests that read your own game files are described in [docs/testing.md](docs/testing.md), and build and contribution rules are in [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under GPL-3.0-or-later; see [LICENSE](LICENSE).
