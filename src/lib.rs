@@ -21,7 +21,8 @@
 //! - [`sampling`]: texture sampling as GPUs define it: address modes, point, bilinear and trilinear filtering,
 //!   level of detail, 2D and 3D.
 //! - `compress` (feature `compress`): one `Decompressor` / `Compressor` interface over LZ4, deflate, zlib, zstd,
-//!   LZO2A and Oodle. Every decode takes the exact expected output size and refuses anything else.
+//!   LZMA, Brotli, LZO1X, LZO2A and Oodle, and a frame-by-frame LZX decoder. Every decode takes the exact expected
+//!   output size and refuses anything else.
 //! - `sqlite` (feature `sqlite`): the tables of an SQLite 3 file image read whole, a table's columns and every row's
 //!   typed values, refusing what it does not read (a write-ahead log, a `WITHOUT ROWID` table, a damaged b-tree).
 //!
@@ -93,6 +94,7 @@ pub const SOURCES: &[(&str, &[u8])] = &[
         "foundations/compress/lzo2a.rs",
         include_bytes!("compress/lzo2a.rs"),
     ),
+    ("foundations/compress/lzx.rs", include_bytes!("compress/lzx.rs")),
     ("foundations/compress/mod.rs", include_bytes!("compress/mod.rs")),
     (
         "foundations/compress/oodle.rs",

@@ -12,6 +12,7 @@
 //! | Brotli stream (RFC 7932) | [`Brotli`] | yes | no |
 //! | LZO1X (miniLZO's format) | [`Lzo1x`] | yes | no |
 //! | LZO2A | [`Lzo2a`] | yes | no |
+//! | LZX (XNA's content), frame by frame | [`LzxDecoder`] | yes | no |
 //! | Oodle (Kraken, Mermaid, Selkie, Leviathan) | [`oodle::Oodle`] | yes | Kraken, with the game's library only |
 //!
 //! The adapters are strict. A decode takes the exact output size the container states and refuses a stream that
@@ -44,8 +45,10 @@ use std::io::Write;
 
 mod lzo1x;
 mod lzo2a;
+mod lzx;
 pub use lzo1x::Lzo1x;
 pub use lzo2a::Lzo2a;
+pub use lzx::{LZX_FRAME, LzxDecoder};
 #[allow(unsafe_code)]
 pub mod oodle;
 pub mod oodle_framing;

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.6 (2026-11-06)
+
+- `compress::LzxDecoder`: LZX, the codec of Microsoft's cabinets that XNA 4.0 compresses its content with, decoded frame
+  by frame (`frame(input, size)`, each frame's input on a bit stream of its own, as each XNB block is): verbatim,
+  aligned-offset and uncompressed blocks, matches that run on into the next frame, and x86 `E8` call translation.
+  Strict as the other codecs: a frame must make exactly its size from its input, with nothing after it but the padding
+  of its last 16-bit word, and bits from a word the input does not hold whole, incomplete code-length sets and matches
+  before the stream's start are refused; memory is the window and one frame. Fixtures from Windows' own encoder
+  (makecab, windows of 2^16 and 2^21 bytes), with their script; uncompressed blocks are laid out by hand, since that
+  encoder writes none. Every one of Terraria's 15,108 LZX-compressed XNB files decodes to the bytes XNA 4.0's own
+  decompressor makes of it.
+
 ## 0.3.5 (2026-11-06)
 
 - `compress::Brotli`: a Brotli stream (RFC 7932), as AssetRipper's type tree packages store theirs, decoded through
