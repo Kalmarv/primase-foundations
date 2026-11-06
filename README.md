@@ -14,7 +14,7 @@ A Rust library of shared building blocks for programs that read and convert game
 - The sRGB transfer curve in `f64` and `f32`, with table-based byte conversions
 - An ordered parallel `map` and in-place `rows_mut` over scoped threads with a stated thread count
 - `scan`, which reads many entries of a few large archive files in file order on several threads (unbuffered on Windows)
-- Decompression of LZ4 blocks, raw deflate, zlib, Zstandard, LZO1X, LZO2A, LZMA and Oodle, plus a streaming zlib/deflate inflater (feature `compress`)
+- Decompression of LZ4 blocks, raw deflate, zlib, Zstandard, LZO1X, LZO2A, LZMA, Brotli and Oodle, plus a streaming zlib/deflate inflater (feature `compress`)
 - Compression to LZ4, deflate and zlib, and to Oodle Kraken through the game's own Oodle library
 - A walker that checks an Oodle stream's block and quantum headers without decoding it
 - Reading whole tables from an SQLite 3 file image (feature `sqlite`)
@@ -40,7 +40,7 @@ cargo add primase-foundations --features compress,sqlite
 | feature | what it adds |
 | --- | --- |
 | *(default)* | `bytes`, `hash`, `vertex`, `parallel`, `scan` (Unix and Windows), `color`, `sampling` |
-| `compress` | the `compress` module: LZ4, deflate, zlib, Zstandard, LZO1X, LZO2A, LZMA and Oodle |
+| `compress` | the `compress` module: LZ4, deflate, zlib, Zstandard, LZO1X, LZO2A, LZMA, Brotli and Oodle |
 | `sqlite` | the `sqlite` module, through `quantydb-sqlite` |
 | `reference-decoder` | on Windows, `compress::reference`: oozextract as a second Oodle decoder for comparing against the game's library |
 

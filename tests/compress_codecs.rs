@@ -263,3 +263,26 @@ fn lzma_streams_with_and_without_the_end_marker() -> Result<()> {
     assert!(Lzma.decompress(&[0x5D, 0, 0], 1).is_err());
     Ok(())
 }
+
+/// Brotli from Google's library decodes; a wrong size, a byte after the stream, a cut stream and a damaged one are
+/// refused.
+#[test]
+fn brotli_streams() -> Result<()> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/brotli");
+    let plain = std::fs::read(dir.join("plain.txt")).unwrap();
+    let stream = std::fs::read(dir.join("plain.br")).unwrap();
+    assert_eq!(Brotli.decompress(&stream, plain.len())?, plain);
+    assert!(Brotli.decompress(&stream, plain.len() - 1).is_err());
+    assert!(Brotli.decompress(&stream, plain.len() + 1).is_err());
+    let e = Brotli
+        .decompress(&stream[..stream.len() - 1], plain.len())
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("ends early"), "{e}");
+    let mut extra = stream.clone();
+    extra.push(0);
+    let e = Brotli.decompress(&extra, plain.len()).unwrap_err().to_string();
+    assert!(e.contains("1 bytes after the stream"), "{e}");
+    assert!(Brotli.decompress(&[0xff; 8], plain.len()).is_err());
+    Ok(())
+}

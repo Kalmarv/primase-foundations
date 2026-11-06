@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.5 (2026-11-06)
+
+- `compress::Brotli`: a Brotli stream (RFC 7932), as AssetRipper's type tree packages store theirs, decoded through
+  `brotli-decompressor` 5.0.3. The stream must end at the end of the input and make exactly the expected size; the
+  output grows as the stream produces it. A fixture from Google's library (through Node's zlib), with its script.
+
 ## 0.3.4 (2026-11-06)
 
 - `compress::Lzma`: LZMA as Unity's asset bundles and 7-Zip's packed streams store it, the five property bytes and the

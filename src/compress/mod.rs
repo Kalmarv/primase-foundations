@@ -9,6 +9,7 @@
 //! | zlib or raw deflate, fed piece by piece | [`Inflater`] | yes | no |
 //! | Zstandard frame (RFC 8878) | [`Zstd`] | yes | no |
 //! | LZMA (the property bytes and the raw stream) | [`Lzma`] | yes | no |
+//! | Brotli stream (RFC 7932) | [`Brotli`] | yes | no |
 //! | LZO1X (miniLZO's format) | [`Lzo1x`] | yes | no |
 //! | LZO2A | [`Lzo2a`] | yes | no |
 //! | Oodle (Kraken, Mermaid, Selkie, Leviathan) | [`oodle::Oodle`] | yes | Kraken, with the game's library only |
@@ -18,10 +19,10 @@
 //! checksum; the error names the codec and the input offset. There is no format autodetection: the caller says which
 //! codec a stream is. A size claimed by a container is untrusted, so what a decode allocates for it is bounded by the
 //! input: LZ4, deflate, zlib, LZO1X and LZO2A refuse, before allocating anything, a claim above their format's ratio
-//! ([`LZ4_MAX_RATIO`], [`DEFLATE_MAX_RATIO`], [`LZO1X_MAX_RATIO`], [`LZO2A_MAX_RATIO`]) times the input's length, and zstd grows its output
-//! block by block as the stream produces it. Oodle's ratio is not bounded here: its decode allocates the claimed size
-//! up front (fallibly, as [`Error::Limit`]), so bound the size before asking. The tighter bound a container knows is
-//! the caller's to apply.
+//! ([`LZ4_MAX_RATIO`], [`DEFLATE_MAX_RATIO`], [`LZO1X_MAX_RATIO`], [`LZO2A_MAX_RATIO`]) times the input's length, and
+//! zstd, LZMA and Brotli grow their output as the stream produces it. Oodle's ratio is not bounded here: its decode
+//! allocates the claimed size up front (fallibly, as [`Error::Limit`]), so bound the size before asking. The tighter
+//! bound a container knows is the caller's to apply.
 //!
 //! [`Inflater`] is the exception to whole-payload decoding: a container whose reader interleaves decompression with
 //! other work, feeding input in the pieces the game reads it in, decodes through it one call at a time and checks
@@ -280,6 +281,70 @@ impl Decompressor for Lzma {
                 ),
             )),
         }
+    }
+}
+
+/// A Brotli stream (RFC 7932), as AssetRipper's type tree packages store theirs. The stream must end exactly at the
+/// end of the input and produce exactly the expected size; the output grows as the stream produces it.
+#[derive(Debug, Clone, Copy)]
+pub struct Brotli;
+impl Decompressor for Brotli {
+    fn decompress(&self, input: &[u8], expected: usize) -> Result<Vec<u8>> {
+        use brotli_decompressor::{BrotliDecompressStream, BrotliResult, BrotliState, StandardAlloc};
+        let mut state = BrotliState::new(
+            StandardAlloc::default(),
+            StandardAlloc::default(),
+            StandardAlloc::default(),
+        );
+        // one byte past `expected` is room enough to see an overrun
+        let mut chunk = vec![0; expected.saturating_add(1).min(1 << 16)];
+        let mut out = Vec::new();
+        let (mut available_in, mut input_offset, mut total_out) = (input.len(), 0, 0);
+        loop {
+            let (mut available_out, mut output_offset) = (chunk.len(), 0);
+            let result = BrotliDecompressStream(
+                &mut available_in,
+                &mut input_offset,
+                input,
+                &mut available_out,
+                &mut output_offset,
+                &mut chunk,
+                &mut total_out,
+                &mut state,
+            );
+            let made = chunk.get(..output_offset).unwrap_or_default();
+            let total = out.len().checked_add(made.len()).ok_or(Error::Limit)?;
+            if total > expected {
+                return Err(Error::Size {
+                    expected,
+                    actual: total,
+                });
+            }
+            out.try_reserve(made.len()).map_err(|_| Error::Limit)?;
+            out.extend_from_slice(made);
+            match result {
+                BrotliResult::ResultSuccess => break,
+                BrotliResult::NeedsMoreOutput => {}
+                BrotliResult::NeedsMoreInput => {
+                    return Err(invalid("brotli", input_offset, "the stream ends early"));
+                }
+                BrotliResult::ResultFailure => {
+                    return Err(invalid("brotli", input_offset, "malformed stream"));
+                }
+            }
+        }
+        if input_offset != input.len() {
+            return Err(invalid(
+                "brotli",
+                input_offset,
+                format!(
+                    "{} bytes after the stream",
+                    input.len().saturating_sub(input_offset)
+                ),
+            ));
+        }
+        check_size(out.len(), expected)?;
+        Ok(out)
     }
 }
 
