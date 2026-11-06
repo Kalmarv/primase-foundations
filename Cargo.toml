@@ -58,7 +58,7 @@ lz4_flex = { version = "=0.14.0", default-features = false, features = ["std", "
 oozextract = { version = "=0.5.7", default-features = false, features = ["verbose_errors"] }
 primase-foundations = { path = "." }
 quantydb-sqlite = { version = "=0.4.0", default-features = false }
-primase-testdata = { version = "0.1.6", git = "https://github.com/Kalmarv/primase-testdata", rev = "40acdd6a2775412cc812f67e5b3edfdc9b76c54c" }
+primase-testdata = "0.1.8"
 ruzstd = { version = "=0.7.3", default-features = false, features = ["std", "hash"] }
 zlib-rs = { version = "=0.6.8", default-features = false, features = ["std"] }
 thiserror = { version = "=2.0.21", default-features = false, features = ["std"] }
