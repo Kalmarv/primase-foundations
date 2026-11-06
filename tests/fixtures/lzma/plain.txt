@@ -1,0 +1,1 @@
+Unity stores LZMA without an end marker; 7-Zip does too. Unity stores LZMA without an end marker; 7-Zip does too. Unity stores LZMA without an end marker; 7-Zip does too. Unity stores LZMA without an end marker; 7-Zip does too. Unity stores LZMA without an end marker; 7-Zip does too. Unity stores LZMA without an end marker; 7-Zip does too. 

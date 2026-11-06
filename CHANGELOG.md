@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.4 (2026-11-06)
+
+- `compress::Lzma`: LZMA as Unity's asset bundles and 7-Zip's packed streams store it, the five property bytes and the
+  raw stream with no 8-byte size, decoded through `lzma-rs` 0.3.0 to the size the caller expects. A stream may end
+  without the end-of-payload marker (Unity, 7-Zip) or with it (liblzma); input left over after the expected size is
+  accepted only when it is that marker. A shorter or longer payload, a cut stream and fewer than five property bytes are
+  refused. Fixtures from p7zip and CPython's liblzma, with the script that makes them.
+
 ## 0.3.3 (2026-11-01)
 
 - `scan` bounds its memory. An extent longer than a window is a large read of its own; the large reads go first,

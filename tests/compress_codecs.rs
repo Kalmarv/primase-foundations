@@ -231,3 +231,35 @@ fn an_inflater_fed_in_pieces_matches_a_whole_decode() -> Result<()> {
     );
     Ok(())
 }
+
+/// LZMA as Unity and 7-Zip store it (property bytes and raw stream): a stream 7-Zip ended without the end-of-payload
+/// marker and one liblzma ended with it both decode; a wrong size, a byte past the payload that is no marker, a cut
+/// stream and missing property bytes are refused.
+#[test]
+fn lzma_streams_with_and_without_the_end_marker() -> Result<()> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lzma");
+    let read = |name: &str| std::fs::read(dir.join(name)).unwrap();
+    let plain = read("plain.txt");
+    for name in ["no-marker.lzma", "marker.lzma"] {
+        let stream = read(name);
+        assert_eq!(Lzma.decompress(&stream, plain.len())?, plain, "{name}");
+        assert!(
+            Lzma.decompress(&stream, plain.len() - 1).is_err(),
+            "{name}: one byte short"
+        );
+        assert!(
+            Lzma.decompress(&stream, plain.len() + 1).is_err(),
+            "{name}: one byte long"
+        );
+        assert!(
+            Lzma.decompress(&stream[..stream.len() - 3], plain.len()).is_err(),
+            "{name}: cut"
+        );
+        let mut extra = stream.clone();
+        extra.push(0);
+        let e = Lzma.decompress(&extra, plain.len()).unwrap_err().to_string();
+        assert!(e.contains("no end-of-payload marker"), "{name}: {e}");
+    }
+    assert!(Lzma.decompress(&[0x5D, 0, 0], 1).is_err());
+    Ok(())
+}

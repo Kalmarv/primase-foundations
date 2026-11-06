@@ -8,6 +8,7 @@
 //! | zlib with a missing end marker or checksum | [`ZlibUnterminated`] | yes | no |
 //! | zlib or raw deflate, fed piece by piece | [`Inflater`] | yes | no |
 //! | Zstandard frame (RFC 8878) | [`Zstd`] | yes | no |
+//! | LZMA (the property bytes and the raw stream) | [`Lzma`] | yes | no |
 //! | LZO1X (miniLZO's format) | [`Lzo1x`] | yes | no |
 //! | LZO2A | [`Lzo2a`] | yes | no |
 //! | Oodle (Kraken, Mermaid, Selkie, Leviathan) | [`oodle::Oodle`] | yes | Kraken, with the game's library only |
@@ -194,6 +195,91 @@ impl Decompressor for Lz4 {
 impl Compressor for Lz4 {
     fn compress(&self, input: &[u8]) -> Result<Vec<u8>> {
         Ok(lz4_flex::block::compress(input))
+    }
+}
+
+/// An LZMA stream as Unity's asset bundles and 7-Zip's archives store one: five property bytes (`lc`/`lp`/`pb` as one
+/// byte, then the dictionary size, a u32) and the raw range-coded stream, without the `.lzma` file's 8-byte size; the
+/// size comes from the container. The stream decodes to exactly the expected size and every input byte is consumed: a
+/// stream that ends with the optional end-of-payload marker after the expected bytes is read to the marker's end, and
+/// anything else after the payload is refused. The output grows with what the stream produces, never past the
+/// expected size.
+#[derive(Debug, Clone, Copy)]
+pub struct Lzma;
+impl Lzma {
+    /// Decodes `input` with the unpacked size `size` (`None`: up to the end-of-payload marker) into at most `limit`
+    /// bytes; returns the output and the input bytes the decoder took, or `None` for output past `limit`.
+    fn run(input: &[u8], size: Option<usize>, limit: usize) -> Result<Option<(Vec<u8>, usize)>> {
+        /// The output, refusing a write past the limit.
+        struct Bounded {
+            out: Vec<u8>,
+            limit: usize,
+            overflowed: bool,
+        }
+        impl Write for Bounded {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if buf.len() > self.limit.saturating_sub(self.out.len()) {
+                    self.overflowed = true;
+                    return Err(std::io::Error::other("past the expected size"));
+                }
+                self.out.try_reserve(buf.len()).map_err(std::io::Error::other)?;
+                self.out.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let options = lzma_rs::decompress::Options {
+            unpacked_size: lzma_rs::decompress::UnpackedSize::UseProvided(
+                size.map(|s| u64::try_from(s).unwrap_or(u64::MAX)),
+            ),
+            memlimit: None,
+            allow_incomplete: false,
+        };
+        let mut src = std::io::Cursor::new(input);
+        let mut out = Bounded {
+            out: Vec::new(),
+            limit,
+            overflowed: false,
+        };
+        match lzma_rs::lzma_decompress_with_options(&mut src, &mut out, &options) {
+            Ok(()) => Ok(Some((
+                out.out,
+                usize::try_from(src.position()).unwrap_or(usize::MAX),
+            ))),
+            Err(_) if out.overflowed => Ok(None),
+            Err(e) => Err(invalid("lzma", usize::try_from(src.position()).unwrap_or(0), e)),
+        }
+    }
+}
+impl Decompressor for Lzma {
+    fn decompress(&self, input: &[u8], expected: usize) -> Result<Vec<u8>> {
+        if input.len() < 5 {
+            return Err(invalid("lzma", 0, "the five property bytes are missing"));
+        }
+        let Some((out, used)) = Lzma::run(input, Some(expected), expected)? else {
+            return Err(Error::Size {
+                expected,
+                actual: expected.saturating_add(1),
+            });
+        };
+        check_size(out.len(), expected)?;
+        if used == input.len() {
+            return Ok(out);
+        }
+        // bytes after the payload: only the end-of-payload marker may be there
+        match Lzma::run(input, None, expected) {
+            Ok(Some((marked, all))) if all == input.len() && marked.len() == expected => Ok(out),
+            _ => Err(invalid(
+                "lzma",
+                used,
+                format!(
+                    "{} bytes after the payload that are no end-of-payload marker",
+                    input.len().saturating_sub(used)
+                ),
+            )),
+        }
     }
 }
 
