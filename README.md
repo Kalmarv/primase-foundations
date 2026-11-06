@@ -1,5 +1,7 @@
 # primase-foundations
 
+[![crates.io: primase-foundations](https://img.shields.io/crates/v/primase-foundations?label=primase-foundations)](https://crates.io/crates/primase-foundations) [![docs.rs](https://img.shields.io/docsrs/primase-foundations)](https://docs.rs/primase-foundations) [![CI](https://img.shields.io/github/actions/workflow/status/Kalmarv/primase-foundations/ci.yml?branch=main&label=CI)](https://github.com/Kalmarv/primase-foundations/actions/workflows/ci.yml)
+
 A Rust library of shared building blocks for programs that read and convert game files. It is the base layer of [primase](https://github.com/Kalmarv/primase) and the format crates built on it, and it does not read any game's archive or container format itself.
 
 ## Features
